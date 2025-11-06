@@ -1,0 +1,61 @@
+{
+  "name": "fraktum-launcher",
+  "version": "1.0.0",
+  "description": "Fraktum Game Launcher",
+  "main": "main.js",
+  "author": "Fraktum Studio",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "clean": "rimraf dist build",
+    "build": "electron-builder --win",
+    "dist": "electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.76.1",
+    "electron-log": "^4.4.8",
+    "electron-updater": "^6.6.2"
+  },
+  "devDependencies": {
+    "electron": "^28.2.0",
+    "electron-builder": "^24.13.3",
+    "rimraf": "^5.0.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_GITHUB_USERNAME/YOUR_LAUNCHER_REPO.git"
+  },
+  "build": {
+    "appId": "com.fraktum.launcher",
+    "productName": "Fraktum Launcher",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!node_modules/.bin",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Fraktum Launcher"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "YOUR_GITHUB_USERNAME",
+        "repo": "YOUR_LAUNCHER_REPO",
+        "releaseType": "release"
+      }
+    ]
+  }
+}

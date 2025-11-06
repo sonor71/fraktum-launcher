@@ -1,0 +1,909 @@
+<!doctype html>
+<html lang="ру">
+<head>
+  <meta charset="utf-8">
+  <title>Fraktum Launcher</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root{
+      --bg:#0b1120; --panel:#0e152a; --panel2:#0b142a; --card:#0f1833;
+      --text:#e7eefc; --muted:#98a9ca; --accent:#3eb7ff; --ok:#27c17d; --offline:#56637d;
+      --border:rgba(255,255,255,.08); --shadow:0 10px 30px rgba(0,0,0,.35);
+      --r:16px; --r2:12px;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{margin:0;background:linear-gradient(180deg,#0b1120,#0a0f1b);color:var(--text);font:14px/1.5 system-ui,Segoe UI,Inter,Arial}
+
+    .app{display:grid;grid-template-columns:240px 1fr;height:100vh}
+
+    /* sidebar */
+    .sidebar{background:linear-gradient(180deg,#0d142b,#0b1327);border-right:1px solid var(--border);padding:14px 12px;display:flex;gap:12px;flex-direction:column}
+    .brand{display:grid;gap:8px;place-items:start;padding:8px}
+    .brand img{width:42px;height:42px;border-radius:10px;filter:drop-shadow(0 6px 16px rgba(0,0,0,.4))}
+    .nav{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+    .nav-btn{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;background:transparent;border:1px solid var(--border);color:var(--text);cursor:pointer}
+    .nav-btn.active{background:rgba(62,183,255,.12);outline:2px solid var(--accent)}
+    .side-note{margin-top:auto;color:var(--muted);font-size:12px;opacity:.8}
+
+    /* content */
+    .content{display:flex;flex-direction:column;gap:14px;padding:14px 18px 18px}
+
+    .topbar{display:flex;align-items:center;justify-content:space-between}
+    .title{font-weight:700;letter-spacing:.3px}
+    .chip{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:999px;border:1px solid var(--border);background:#0e1832;cursor:pointer}
+    .chip-ava{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:#09132a;border:1px solid rgba(62,183,255,.35);font-weight:800;color:#cfe0ff}
+    .chip-name{max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+    /* hero + info bar */
+    .hero{position:relative;border-radius:18px;min-height:380px;background:#0d1426 center/cover no-repeat;border:1px solid var(--border);box-shadow:var(--shadow);overflow:hidden}
+    .hero .play-wrap{position:absolute;left:50%;top:48%;transform:translate(-50%,-50%);display:grid;gap:10px;place-items:center}
+    .play{padding:12px 26px;border-radius:999px;border:0;background:linear-gradient(180deg,#4ec2ff,#2aa4e6);color:#071323;font-weight:800;cursor:pointer;box-shadow:0 10px 28px rgba(62,183,255,.35)}
+    .info-bar{position:absolute;left:0;right:0;bottom:0;background:linear-gradient(180deg,rgba(8,12,20,.0),rgba(8,12,20,.92));padding:14px 16px}
+    .info-title{font-weight:800;margin-bottom:2px;text-shadow:0 3px 14px rgba(0,0,0,.5)}
+    .info-text{color:#c6d4f5}
+
+    .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .btn{background:#0e1832;border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:10px;cursor:pointer}
+    .btn.primary{background:linear-gradient(180deg,#27d3c0,#1bb3a2);border:0}
+    .input,.select{background:#0e1832;border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:10px}
+
+    /* modal account */
+    .modal{position:fixed;inset:0;display:none}
+    .modal.show{display:block}
+    .backdrop{position:absolute;inset:0;background:rgba(4,8,16,.55);backdrop-filter:blur(8px)}
+    .dialog{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(920px,94vw);max-height:90vh;overflow:auto;border-radius:20px;border:1px solid var(--border);background:linear-gradient(180deg,#0f1730,#0f1833);padding:16px;box-shadow:var(--shadow)}
+    .acc-grid{display:grid;grid-template-columns:280px 1fr;gap:16px}
+
+    /* профиль */
+    .avatar{position:relative;width:84px;height:84px;border-radius:50%;background:#0b1326;border:1px solid rgba(62,183,255,.35);overflow:hidden}
+    .status{position:absolute;right:0;bottom:0;width:14px;height:14px;border-radius:50%;background:var(--ok);border:2px solid #0f1833}
+    .edit-row{display:flex;align-items:center;gap:8px}
+    .editor{display:grid;gap:10px;margin-top:8px}
+    .card{background:#0f1833;border:1px solid var(--border);border-radius:16px;padding:12px}
+    .card h4{margin:0 0 8px 0}
+    .friends-row{display:flex;align-items:center;gap:10px}
+    .friend-dot{position:relative;width:36px;height:36px;border-radius:50%;background:#1c2a4b;border:1px solid var(--border)}
+    .friend-dot .s{position:absolute;right:-2px;bottom:-2px;width:10px;height:10px;border-radius:50%;background:var(--offline);border:2px solid #0f1833}
+    .games .item,.comments .item{display:flex;align-items:center;justify-content:space-between;padding:10px;border-radius:12px;border:1px solid var(--border);background:#0e1832;margin-top:8px}
+    .tabs{display:flex;gap:8px;margin-bottom:10px}
+    .tab{background:#0e1832;border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:10px;cursor:pointer}
+    .tab.active{background:rgba(62,183,255,.15);outline:1px solid rgba(62,183,255,.4)}
+    .hidden{display:none !important}
+    .muted{color:var(--muted)}
+
+    /* NEW: список друзей + контекстное меню + модалка профиля */
+    .friends-list{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+    .friend-item{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:12px;border:1px solid var(--border);background:#0e1832;cursor:default}
+    .friend-left{display:flex;align-items:center;gap:10px}
+    .friend-ava{position:relative;width:28px;height:28px;border-radius:50%;overflow:hidden;background:#0b1326;border:1px solid rgba(62,183,255,.35)}
+    .friend-dot-s{position:absolute;right:-2px;bottom:-2px;width:12px;height:12px;border-radius:50%;border:2px solid #0f1833}
+    .friend-menu{position:fixed;z-index:70;background:#0f1833;border:1px solid var(--border);border-radius:12px;padding:6px;display:none;min-width:180px}
+    .friend-menu button{display:block;width:100%;text-align:left;background:transparent;border:0;color:var(--text);padding:8px;border-radius:8px;cursor:pointer}
+    .friend-menu button:hover{background:rgba(255,255,255,.06)}
+
+    /* модалка профиля друга */
+    .friend-dialog .head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+    .friend-dialog .ava{position:relative;width:64px;height:64px;border-radius:50%;overflow:hidden;background:#0b1326;border:1px solid rgba(62,183,255,.35)}
+    .friend-dialog .dot{position:absolute;right:0;bottom:0;width:14px;height:14px;border-radius:50%;border:2px solid #0f1833}
+    .friend-dialog .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .friend-dialog h4{margin:0 0 6px}
+
+    /* === ADD: аватар в чипе остаётся кругом и не вылезает === */
+    .chip-ava{overflow:hidden}
+    .chip-ava img{width:100%;height:100%;object-fit:cover;border-radius:50%;display:block}
+    
+    .friend-dot img {
+  width:100%;
+  height:100%;
+  object-fit:cover;
+  border-radius:50%;
+  display:block;
+}
+
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- LEFT -->
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="./assets/logo-32.png" alt="Fraktum">
+      </div>
+      <nav class="nav">
+        <button id="btnNovel"  class="nav-btn active">новела</button>
+        <button id="btnCards"  class="nav-btn">карточная игра</button>
+      </nav>
+      <div class="side-note">Fraktum Launcher v0.1.0</div>
+    </aside>
+
+    <!-- MAIN -->
+    <main class="content">
+      <div class="topbar">
+        <div class="title">какая-нибудь информация</div>
+        <div id="userChip" class="chip" title="Открыть профиль">
+          <div id="chipAva"  class="chip-ava">U</div>
+          <div id="chipName" class="chip-name">User</div>
+        </div>
+      </div>
+
+      <section id="hero" class="hero" style="background-image:url('./assets/novel.jpg')">
+        <div class="play-wrap">
+          <button id="btnPlay" class="play">играть</button>
+        </div>
+        <div class="info-bar">
+          <div id="gameTitle" class="info-title">Новела</div>
+          <div id="infoText"  class="info-text">Информация об игре: что это за игра и что она из себя представляет.</div>
+        </div>
+      </section>
+
+      <!-- exe + сейвы -->
+      <section class="card">
+        <div class="row">
+          <button id="btnChooseExe" class="btn">Выбрать EXE</button>
+          <span id="exeLabel" class="muted">EXE не выбран</span>
+          <div style="flex:1"></div>
+          <input id="saveFile" type="file" accept=".zip" class="input" style="max-width:280px">
+          <select id="slot" class="select" style="width:120px">
+            <option value="slot1">slot1</option><option value="slot2">slot2</option>
+          </select>
+          <button id="btnUpload" class="btn primary">Загрузить</button>
+          <button id="btnDownload" class="btn">Скачать</button>
+        </div>
+        <div id="saveMeta" class="muted" style="margin-top:6px">slot1: пусто | slot2: пусто</div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ACCOUNT MODAL -->
+  <div id="modal" class="modal" aria-hidden="true">
+    <div class="backdrop" data-close></div>
+    <div class="dialog">
+      <div class="tabs">
+        <button id="tabProfileBtn" class="tab active">Профиль</button>
+        <button id="tabLoginBtn"   class="tab">Вход</button>
+        <button id="tabInboxBtn"   class="tab">Почта</button>
+        <div style="flex:1"></div>
+        <button id="accClose" class="tab">Закрыть</button>
+      </div>
+
+      <!-- PROFILE -->
+      <section id="tabProfile" class="acc-grid">
+        <!-- левая колонка: редактор -->
+        <div>
+          <div class="card">
+            <div class="edit-row">
+              <div class="avatar">
+                <img id="avatarPreview" alt="" style="display:none;width:100%;height:100%;object-fit:cover">
+                <span class="status"></span>
+              </div>
+              <button id="btnEdit" class="btn">редактировать профиль</button>
+            </div>
+            <div id="editor" class="editor hidden">
+              <label class="btn">
+                изменить аву
+                <input id="avatarFile" type="file" accept="image/*" hidden>
+              </label>
+              <div class="row">
+                <input id="nick" class="input" placeholder="сменить ник">
+                <button id="btnSaveNick" class="btn primary">сохранить</button>
+              </div>
+              <!-- NEW: выход из аккаунта -->
+              <button id="btnSignOut" class="btn" style="margin-top:6px">выйти из аккаунта</button>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:12px">
+            <h4>добавить в друзья</h4>
+            <div class="row">
+              <input id="friendSearch" class="input" placeholder="ник игрока">
+              <button id="btnFind" class="btn">добавить</button>
+            </div>
+            <div class="friends-row" style="margin-top:10px">
+              <div class="friend-dot"><span class="s"></span></div>
+              <div class="friend-dot"><span class="s"></span></div>
+              <div class="friend-dot"><span class="s"></span></div>
+              <div class="friend-dot"><span class="s"></span></div>
+              <div class="friend-dot"><span class="s"></span></div>
+            </div>
+
+            <!-- NEW: реальный список друзей -->
+            <div id="friendsList" class="friends-list"></div>
+          </div>
+        </div>
+
+        <!-- правая колонка: игры и комментарии -->
+        <div>
+          <div class="card games">
+            <h4>наши последние игры</h4>
+            <div class="item"><span>Новела</span><span class="muted">1.2 часа</span></div>
+            <div class="item"><span>Карточная игра</span><span class="muted">5 часов</span></div>
+          </div>
+
+          <div class="card comments" style="margin-top:12px">
+            <h4>комментарии других игроков на аккаунт</h4>
+            <div id="commentsList" class="muted">Комментов пока нет.</div>
+            <div class="row" style="margin-top:10px">
+              <input id="commentText" class="input" placeholder="написать комментарий…">
+              <button id="btnComment" class="btn primary">отправить</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- LOGIN -->
+      <section id="tabLogin" class="card hidden">
+        <div class="row" style="gap:16px;align-items:flex-end;flex-wrap:wrap">
+          <div style="flex:1 1 240px">
+            <label class="muted">email</label>
+            <input id="loginEmail" class="input" placeholder="you@mail.com">
+          </div>
+          <div style="flex:1 1 180px">
+            <label class="muted">код</label>
+            <input id="loginCode" class="input" placeholder="123456" inputmode="numeric" pattern="[0-9]*">
+          </div>
+          <button id="btnSendCode" class="btn">отправить код</button>
+          <button id="btnLogin" class="btn primary">войти</button>
+          <label class="row" style="gap:8px">
+            <input id="rememberMe" type="checkbox"> запомнить меня
+          </label>
+        </div>
+      </section>
+
+      <!-- INBOX -->
+      <section id="tabInbox" class="acc-grid hidden">
+        <div class="card">
+          <h4>входящие</h4>
+          <div id="inboxIn" class="muted">нет входящих заявок</div>
+        </div>
+        <div class="card">
+          <h4>исходящие</h4>
+          <div id="inboxOut" class="muted">нет исходящих заявок</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- NEW: контекстное меню друга -->
+  <div id="friendMenu" class="friend-menu">
+    <button id="openFriendProfile">Открыть профиль</button>
+  </div>
+
+  <!-- NEW: модалка профиля друга -->
+  <div id="friendModal" class="modal">
+    <div class="backdrop" data-close></div>
+    <div class="dialog friend-dialog">
+      <div class="head">
+        <div class="ava"><img id="fAva" alt="" style="display:none;width:100%;height:100%;object-fit:cover"><span id="fDot" class="dot"></span></div>
+        <div>
+          <div id="fNick" style="font-weight:800">Игрок</div>
+          <div id="fStatus" class="muted">оффлайн</div>
+        </div>
+        <div style="margin-left:auto">
+          <button id="closeFriend" class="btn">Закрыть</button>
+        </div>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <h4>Часы по играм</h4>
+          <div id="fGames" class="muted">Скоро: требуется серверный метод.</div>
+        </div>
+        <div class="card">
+          <h4>Инвентарь (карточки)</h4>
+          <div id="fInv" class="muted">Скоро.</div>
+        </div>
+      </div>
+
+      <!-- === ADD: Комментарии к профилю друга === -->
+      <div class="card" style="margin-top:12px">
+        <h4>Комментарии</h4>
+        <div id="friendComments"></div>
+        <div class="row" style="margin-top:10px">
+          <input id="friendCommentText" class="input" placeholder="написать комментарий… (+rep)">
+          <button id="friendCommentSend" class="btn primary">отправить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  ;(() => {
+    const $  = (s, r=document)=>r.querySelector(s);
+    const on = (el,ev,cb)=>el&&el.addEventListener(ev,cb);
+    const sbOk = () => typeof window.sb === 'object' && window.sb;
+
+    /* ===== STATE ===== */
+    const state = {
+      game:'novel',
+      exeName:null,
+      saves:{ slot1:null, slot2:null },
+      profile:{ nick:'', email:'user@example.com', avatar:'' },
+      comments:[],
+      remember:false,
+      auth:false,
+      friends:[],
+      ctxFriendId:null,
+      selfId: null, // ← id текущего юзера (для серверных комментов к своему профилю)
+    };
+    try{ const raw=localStorage.getItem('fl_state'); if(raw) Object.assign(state, JSON.parse(raw)); }catch(_){}
+    const save = ()=>localStorage.setItem('fl_state', JSON.stringify(state));
+
+    /* ===== DOM ===== */
+    const hero = $('#hero'), gameTitle=$('#gameTitle'), infoText=$('#infoText');
+    const btnNovel=$('#btnNovel'), btnCards=$('#btnCards');
+    const chipName=$('#chipName'), chipAva=$('#chipAva'), userChip=$('#userChip');
+
+    const btnPlay=$('#btnPlay'), btnChooseExe=$('#btnChooseExe'), exeLabel=$('#exeLabel');
+
+    const modal=$('#modal'), accClose=$('#accClose');
+    const tabProfileBtn=$('#tabProfileBtn'), tabLoginBtn=$('#tabLoginBtn'), tabInboxBtn=$('#tabInboxBtn');
+    const tabProfile=$('#tabProfile'), tabLogin=$('#tabLogin'), tabInbox=$('#tabInbox');
+
+    const btnEdit=$('#btnEdit'), editor=$('#editor'), avatarFile=$('#avatarFile'), avatarPreview=$('#avatarPreview');
+    const nick=$('#nick'), btnSaveNick=$('#btnSaveNick'), btnSignOut=$('#btnSignOut');
+
+    const friendSearch=$('#friendSearch'), btnFind=$('#btnFind');
+    const friendsList=$('#friendsList');
+
+    const commentsList=$('#commentsList'), commentText=$('#commentText'), btnComment=$('#btnComment');
+
+    const loginEmail=$('#loginEmail'), loginCode=$('#loginCode'), btnLogin=$('#btnLogin'), rememberMe=$('#rememberMe');
+    const btnSendCode=$('#btnSendCode');
+
+    const saveFile=$('#saveFile'), btnUpload=$('#btnUpload'), btnDownload=$('#btnDownload'), slot=$('#slot'), saveMeta=$('#saveMeta');
+
+    // inbox
+    const inboxIn=$('#inboxIn'), inboxOut=$('#inboxOut');
+
+    // friend menu + modal
+    const friendMenu=$('#friendMenu'), openFriendProfileBtn=$('#openFriendProfile');
+    const friendModal=$('#friendModal'), fAva=$('#fAva'), fDot=$('#fDot'), fNick=$('#fNick'), fStatus=$('#fStatus');
+    const closeFriend=$('#closeFriend');
+
+    /* === ADD: DOM комментариев друга === */
+    const friendComments = $('#friendComments');
+    const friendCommentText = $('#friendCommentText');
+    const friendCommentSend = $('#friendCommentSend');
+    let currentFriendId = null;
+
+    /* ===== helpers ===== */
+    const escapeHTML = (s) => String(s||'')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+    /* ===== view ===== */
+    function applyGame(){
+      const isNovel = state.game==='novel';
+      btnNovel.classList.toggle('active', isNovel);
+      btnCards.classList.toggle('active', !isNovel);
+      hero.style.backgroundImage = isNovel ? "url('./assets/novel.jpg')" : "url('./assets/cards.jpg')";
+      gameTitle.textContent = isNovel ? 'Новела' : 'Карточная игра';
+      infoText.textContent = isNovel
+        ? 'Информация об игре: ветвящийся сюжет, выборы и концовки.'
+        : 'Собери колоду и сразись. Кроссплатформенные сейвы.';
+    }
+    function applyProfile(){
+      chipName.textContent = state.profile.nick || state.profile.email || 'User';
+      if(state.profile.avatar){
+        chipAva.innerHTML = '<img src="'+state.profile.avatar+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+        avatarPreview.src = state.profile.avatar; avatarPreview.style.display='block';
+      }else{
+        chipAva.textContent = (state.profile.nick||'U').slice(0,1).toUpperCase();
+        avatarPreview.removeAttribute('src'); avatarPreview.style.display='none';
+      }
+    }
+    function applyExe(){ exeLabel.textContent = state.exeName ? 'EXE: '+state.exeName : 'EXE не выбран'; }
+    function renderComments(){
+      if(!state.comments.length){ commentsList.textContent='Комментов пока нет.'; return; }
+      commentsList.innerHTML = state.comments.slice(-8).map(c=>
+        `<div class="item"><span>${escapeHTML(c.author)}</span><span class="muted">${new Date(c.ts).toLocaleString()}</span></div>
+         <div class="muted" style="margin:6px 0 8px 6px">${escapeHTML(c.text)}</div>`
+      ).join('');
+    }
+    function renderSaves(){
+      const s1 = state.saves.slot1 ? `slot1: ${state.saves.slot1.name} • ${(state.saves.slot1.size/1024/1024).toFixed(1)} МБ` : 'slot1: пусто';
+      const s2 = state.saves.slot2 ? `slot2: ${state.saves.slot2.name} • ${(state.saves.slot2.size/1024/1024).toFixed(1)} МБ` : 'slot2: пусто';
+      saveMeta.textContent = `${s1} | ${s2}`;
+    }
+
+    /* ===== NEW: Друзья ===== */
+    function renderFriends(){
+      if(!friendsList) return;
+      friendsList.innerHTML = '';
+      if(!state.friends.length){
+        const empty = document.createElement('div');
+        empty.className = 'muted';
+        empty.textContent = 'Друзей пока нет.';
+        friendsList.appendChild(empty);
+        return;
+      }
+      state.friends.forEach(f=>{
+        const row = document.createElement('div');
+        row.className = 'friend-item';
+        row.dataset.uid = f.id;
+
+        const left = document.createElement('div');
+        left.className = 'friend-left';
+
+        const ava = document.createElement('div');
+        ava.className = 'friend-ava';
+        if(f.avatar_url){
+          ava.innerHTML = `<img src="${f.avatar_url}${f.avatar_url.includes('?')?'&':'?'}v=${Date.now()}" style="width:100%;height:100%;object-fit:cover">`;
+        }
+        const dot = document.createElement('span');
+        dot.className = 'friend-dot-s';
+        dot.style.background = f.online ? 'var(--ok)' : 'var(--offline)';
+        ava.appendChild(dot);
+
+        const name = document.createElement('span');
+        name.textContent = f.display_name || 'Игрок';
+
+        const right = document.createElement('span');
+        right.className = 'muted';
+        right.textContent = f.online ? 'в сети' : 'оффлайн';
+
+        left.appendChild(ava); left.appendChild(name);
+        row.appendChild(left); row.appendChild(right);
+
+        // контекстное меню (ПКМ)
+        row.addEventListener('contextmenu', (e)=>{
+          e.preventDefault();
+          state.ctxFriendId = f.id;
+          friendMenu.style.left = e.clientX+'px';
+          friendMenu.style.top  = e.clientY+'px';
+          friendMenu.style.display = 'block';
+        });
+
+        // ЛКМ — сразу открыть профиль
+        row.addEventListener('click', ()=>openFriendProfile(f.id));
+
+        friendsList.appendChild(row);
+        
+        function renderFriends(){
+  // ...твоя текущая логика...
+  friendsList.appendChild(row);
+  // ...
+  renderFriendDots(); // ← ДОБАВЬ В КОНЦЕ
+}
+
+async function loadFriends(){
+  // ...твоя текущая логика...
+  save(); renderFriends();
+  renderFriendDots(); // ← на всякий случай после обновления
+}
+
+      });
+
+      // === QUICK FRIEND DOTS (заполняем 5 кружков) ===
+const friendDots = document.querySelectorAll('.friends-row .friend-dot');
+
+function renderFriendDots() {
+  if (!friendDots?.length) return;
+  friendDots.forEach((dot, i) => {
+    const f = state.friends[i];           // берём первых 5 друзей
+    dot.innerHTML = '';                   // чистим содержимое
+    dot.style.overflow = 'hidden';
+    dot.style.cursor = f ? 'pointer' : 'default';
+
+    if (f) {
+      // аватар
+      const img = document.createElement('img');
+      const src = f.avatar_url ? `${f.avatar_url}${f.avatar_url.includes('?')?'&':'?'}v=${Date.now()}` : '';
+      if (src) {
+        img.src = src;
+        img.style.width = '100%';
+        img.style.height = '100%';
+        img.style.objectFit = 'cover';
+        img.style.display = 'block';
+        img.style.borderRadius = '50%';
+        dot.appendChild(img);
+      }
+      // индикатор онлайна
+      const s = document.createElement('span');
+      s.className = 's';
+      s.style.background = f.online ? 'var(--ok)' : 'var(--offline)';
+      dot.appendChild(s);
+
+      dot.title = f.display_name || 'Игрок';
+      dot.onclick = () => openFriendProfile(f.id);
+    } else {
+      // пустой кружок как раньше
+      const s = document.createElement('span');
+      s.className = 's';
+      dot.appendChild(s);
+      dot.title = '';
+      dot.onclick = null;
+    }
+  });
+}
+
+    }
+    async function loadFriends(){
+      try{
+        if(!sbOk()) return;
+        const arr = await window.sb.listFriends();
+        state.friends = Array.isArray(arr) ? arr : [];
+        save(); renderFriends();
+      }catch(e){ console.debug(e); }
+    }
+    
+    function resetLocalProfileToGuest(){
+  state.profile = { nick:'', email:'', avatar:'' };
+  chipName.textContent = 'User';
+  chipAva.innerHTML = '';            // убираем старую картинку
+  chipAva.textContent = 'U';         // ставим букву
+  avatarPreview.removeAttribute('src');
+  avatarPreview.style.display='none';
+}
+
+    function hideFriendMenu(){ friendMenu.style.display='none'; state.ctxFriendId=null; }
+
+    /* === ADD: Комментарии друга === */
+    function renderFriendCommentsList(list){
+      if(!friendComments) return;
+      if(!list || !list.length){
+        friendComments.innerHTML = '<div class="muted">Комментариев пока нет.</div>';
+        return;
+      }
+      friendComments.innerHTML = list.map(c => `
+        <div class="item" style="display:flex;align-items:center;justify-content:space-between;padding:10px;border:1px solid var(--border);background:#0e1832;border-radius:12px;margin-top:8px">
+          <span>${escapeHTML(c.author_name||'Игрок')}</span>
+          <span class="muted">${new Date(c.ts||Date.now()).toLocaleString()}</span>
+        </div>
+        <div class="muted" style="margin:6px 0 8px 6px">${escapeHTML(c.text||'')}</div>
+      `).join('');
+    }
+    async function loadFriendComments(uid){
+      try{
+        if(sbOk() && window.sb.getComments){
+          const arr = await window.sb.getComments(uid);
+          renderFriendCommentsList(arr);
+        }else{
+          renderFriendCommentsList([]);
+        }
+      }catch(e){
+        console.error(e);
+        renderFriendCommentsList([]);
+      }
+    }
+    async function sendFriendComment(){
+      const txt = (friendCommentText?.value||'').trim();
+      if(!txt) return;
+      if(!currentFriendId){ alert('Игрок не выбран'); return; }
+      try{
+        if(sbOk() && window.sb.addComment){
+          await window.sb.addComment(currentFriendId, txt);
+          friendCommentText.value='';
+          await loadFriendComments(currentFriendId);
+        }else{
+          alert('Нет соединения с Supabase');
+        }
+      }catch(e){
+        console.error(e);
+        alert('Не удалось отправить комментарий');
+      }
+    }
+async function loadMyComments(){
+  try{
+    // если нет авторизации/ID — показываем локальный фоллбэк
+    if(!state.auth || !state.selfId || !sbOk() || !window.sb.getComments){
+      renderComments(); // твой локальный рендер (оставляем фоллбэк)
+      return;
+    }
+    const list = await window.sb.getComments(state.selfId);
+    if(!list || !list.length){
+      commentsList.textContent = 'Комментов пока нет.';
+      return;
+    }
+    commentsList.innerHTML = list.slice(0,50).map(c =>
+      `<div class="item"><span>${c.author_name||'Игрок'}</span><span class="muted">${new Date(c.ts).toLocaleString()}</span></div>
+       <div class="muted" style="margin:6px 0 8px 6px">${c.text||''}</div>`
+    ).join('');
+  }catch(e){
+    console.error(e);
+    // на ошибке — не падаем, показываем локальные, если есть
+    renderComments();
+  }
+}
+
+async function addCommentToMyProfile(text){
+  const t = String(text||'').trim();
+  if(!t) return;
+  // если нет онлайна — пишем в локальный фоллбэк
+  if(!state.auth || !state.selfId || !sbOk() || !window.sb.addComment){
+    state.comments.push({ author: state.profile.nick || 'Гость', text:t, ts:Date.now() });
+    save(); renderComments();
+    return;
+  }
+  try{
+    await window.sb.addComment(state.selfId, t);
+    await loadMyComments();
+  }catch(e){
+    console.error(e);
+    // фоллбэк на локал, чтобы юзер не потерял текст
+    state.comments.push({ author: state.profile.nick || 'Гость', text:t, ts:Date.now() });
+    save(); renderComments();
+  }
+}
+
+    async function openFriendProfile(uid){
+      try{
+        currentFriendId = uid;
+        if(!sbOk()) { friendModal.classList.add('show'); return; }
+        const p = await window.sb.getProfileById(uid);
+        fNick.textContent = p?.display_name || 'Игрок';
+        const online = !!(p?.last_seen && (Date.now()-new Date(p.last_seen).getTime()<120000));
+        fStatus.textContent = online ? 'в сети' : 'оффлайн';
+        fDot.style.background = online ? 'var(--ok)' : 'var(--offline)';
+        if(p?.avatar_url){
+          fAva.src = `${p.avatar_url}${p.avatar_url.includes('?')?'&':'?'}v=${Date.now()}`;
+          fAva.style.display='block';
+        }else{
+          fAva.removeAttribute('src'); fAva.style.display='none';
+        }
+        await loadFriendComments(uid);
+        friendModal.classList.add('show');
+      }catch(e){ console.error(e); }
+    }
+
+    /* ===== init ===== */
+    applyGame(); applyProfile(); applyExe(); renderComments(); renderSaves();
+    loadFriends();
+    setInterval(loadFriends, 15000);
+
+    // автологин, если сессия жива
+(async ()=>{
+  try{
+    if(sbOk() && window.sb.getUserId){
+      const myId = await window.sb.getUserId();
+      if(myId){
+        state.selfId = myId;
+        state.auth = true;
+        // подтащим профиль
+        try{
+          const p = await window.sb.getProfile();
+          if (p){
+            state.profile.nick = p.display_name || '';
+            state.profile.email = p.email || state.profile.email || '';
+            state.profile.avatar = p.avatar_url || '';
+            save(); applyProfile();
+          }
+        }catch(_){}
+        await loadMyComments();
+        await loadFriends();
+      } else {
+        // нет сессии — гость
+        state.auth = false;
+        state.selfId = null;
+        resetLocalProfileToGuest();
+        commentsList.textContent = 'Комментов пока нет.';
+        save();
+      }
+    }
+  }catch(e){ console.debug(e); }
+})();
+
+
+    /* ===== events ===== */
+    on(btnNovel,'click',()=>{ state.game='novel'; save(); applyGame(); });
+    on(btnCards,'click',()=>{ state.game='cards'; save(); applyGame(); });
+
+    on(btnPlay,'click',()=>{ if(!state.exeName){ alert('Сначала выбери EXE'); return; } alert('Запуск: '+state.exeName); });
+
+    on(btnChooseExe,'click', async ()=>{
+      try{
+        if(window.showOpenFilePicker){
+          const [h] = await window.showOpenFilePicker({ multiple:false, types:[{description:'Executable', accept:{'application/x-msdownload':['.exe']}}] });
+          const f = await h.getFile(); state.exeName=f.name; save(); applyExe();
+        }else{
+          const i=document.createElement('input'); i.type='file'; i.accept='.exe'; i.style.display='none'; document.body.appendChild(i);
+          i.click(); await new Promise(r=>i.onchange=r); const f=i.files?.[0]; if(f){ state.exeName=f.name; save(); applyExe(); } i.remove();
+        }
+      }catch(_){}
+    });
+
+    // модалка аккаунта
+    on(userChip,'click',()=>modal.classList.add('show'));
+    on($('.backdrop',modal),'click',()=>modal.classList.remove('show'));
+    on(accClose,'click',()=>modal.classList.remove('show'));
+
+    // вкладки
+    function showTab(id){
+      tabProfile.classList.toggle('hidden', id!=='profile');
+      tabLogin  .classList.toggle('hidden', id!=='login');
+      tabInbox  .classList.toggle('hidden', id!=='inbox');
+      tabProfileBtn.classList.toggle('active', id==='profile');
+      tabLoginBtn  .classList.toggle('active', id==='login');
+      tabInboxBtn  .classList.toggle('active', id==='inbox');
+      if(id==='inbox') refreshInbox();
+    }
+    on(tabProfileBtn,'click',()=>showTab('profile'));
+    on(tabLoginBtn,'click',  ()=>showTab('login'));
+    on(tabInboxBtn,'click',  ()=>showTab('inbox'));
+
+    // редактор
+    on(btnEdit,'click',()=>editor.classList.toggle('hidden'));
+    on(avatarFile,'change', async (e)=>{
+      const f=e.target.files?.[0]; if(!f) return;
+      try{
+        if(sbOk() && window.sb.uploadAvatar){
+          const res = await window.sb.uploadAvatar(f);
+          state.profile.avatar = res.url;
+        }else{
+          const b64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(f); });
+          state.profile.avatar = b64;
+        }
+        save(); applyProfile();
+        if(sbOk() && window.sb.updateProfile){
+          try{ await window.sb.updateProfile({ avatar_url: state.profile.avatar }); }catch(_){}
+        }
+      }catch(err){ console.error(err); alert('Не удалось загрузить аватар'); }
+    });
+    on(btnSaveNick,'click',async ()=>{
+      state.profile.nick = (nick.value||'').trim(); save(); applyProfile();
+      if(sbOk() && window.sb.updateProfile){
+        try{ await window.sb.updateProfile({ display_name: state.profile.nick || null }); }catch(_){}
+      }
+    });
+    on(btnSignOut,'click', async ()=>{
+  try{ if(sbOk() && window.sb.signOut) await window.sb.signOut(); }catch(_){}
+  // Полный локальный сброс
+  state.auth = false;
+  state.selfId = null;
+  state.comments = [];          // чистим локальные комменты, чтобы не путали
+  resetLocalProfileToGuest();   // чистим ник/аву визуально
+  save();
+  // UI
+  commentsList.textContent = 'Комментов пока нет.';
+  alert('Вы вышли');
+});
+
+
+    // друзья: отправка заявки
+    on(btnFind,'click', async ()=>{
+      const q = (friendSearch.value||'').trim(); if(!q) return;
+      if(!sbOk()){ alert('supabase недоступен'); return; }
+      try{
+        const res = await window.sb.searchUsersByNick(q);
+        if(!res || !res.length){ alert('Пользователь не найден'); return; }
+        const target = res[0].id;
+        const r = await window.sb.sendFriendRequest(target);
+        if(r?.ok) { alert(r.duplicate ? 'Заявка уже существует' : 'Заявка отправлена'); friendSearch.value=''; showTab('inbox'); }
+        else alert('Не удалось отправить');
+      }catch(e){ console.error(e); alert('Ошибка отправки'); }
+    });
+
+    // комменты (локально в своём профиле)
+     on(btnComment,'click', async ()=>{
+  const t = commentText.value.trim(); if(!t) return;
+  commentText.value = '';
+  await addCommentToMyProfile(t);
+  });
+
+    // логин/код
+    rememberMe.checked = !!state.remember;
+    on(btnSendCode,'click', async ()=>{
+      const email=(loginEmail?.value||'').trim(); if(!email){ alert('Введи email'); return; }
+      if(!sbOk() || !window.sb.sendMagicLink){ alert('Supabase-бридж недоступен'); return; }
+      try{ await window.sb.sendMagicLink(email); alert('Письмо отправлено. Проверь почту.'); }catch(e){ console.error(e); alert('Не удалось отправить'); }
+    });
+    on(btnLogin,'click', async ()=>{
+      const email=(loginEmail?.value||'').trim(), code=(loginCode?.value||'').trim();
+      if(!email || !code){ alert('Введи email и код'); return; }
+      if(!sbOk() || !window.sb.verifyOtp){ alert('Supabase-бридж недоступен'); return; }
+      try{
+        await window.sb.verifyOtp(email, code);
+        state.auth = true; state.remember = !!rememberMe.checked; save();
+        await loadFriends();
+        showTab('profile'); modal.classList.remove('show');
+      }catch(e){ console.error(e); alert('Код не подошёл'); }
+      const myId = (await window.sb.getUserId?.()) || null;
+state.selfId = myId;
+state.auth = true;
+state.remember = !!rememberMe.checked;
+save();
+
+// подтянем серверный профиль (если есть)
+try{
+  const p = await window.sb.getProfile();
+  if (p){
+    state.profile.nick = p.display_name || '';
+    state.profile.email = p.email || state.profile.email || '';
+    state.profile.avatar = p.avatar_url || '';
+    save(); applyProfile();
+  }
+}catch(_){}
+
+// загрузим комменты к себе
+await loadMyComments();
+await loadFriends();
+    });
+
+    // сейвы (локально)
+    on(btnUpload,'click',async ()=>{
+      const f=saveFile.files?.[0]; if(!f){ alert('Выбери .zip'); return; }
+      const reader = new FileReader();
+      reader.onload=()=>{ state.saves[slot.value] = { name:f.name, size:f.size, dataURL:reader.result }; save(); renderSaves(); };
+      reader.readAsDataURL(f);
+    });
+    on(btnDownload,'click',()=>{
+      const s = state.saves[slot.value]; if(!s){ alert('Пусто'); return; }
+      const a=document.createElement('a'); a.href=s.dataURL; a.download=s.name; a.click();
+    });
+
+    /* ===== INBOX ===== */
+    async function refreshInbox(){
+      if(!sbOk()){ inboxIn.textContent='нет входящих (офлайн)'; inboxOut.textContent='нет исходящих (офлайн)'; return; }
+      try{
+        const [incoming, outgoing] = await Promise.all([ window.sb.listIncomingRequests(), window.sb.listOutgoingRequests() ]);
+        if(!incoming?.length){ inboxIn.innerHTML='<span class="muted">нет входящих заявок</span>'; }
+        else{
+          inboxIn.innerHTML = incoming.map(req=>{
+            const name = req.from?.display_name || 'Игрок';
+            const ava = req.from?.avatar_url || '';
+            return `
+              <div class="friend-item">
+                <div class="friend-left">
+                  <div class="friend-ava">${ava?`<img src="${ava}" style="width:100%;height:100%;object-fit:cover">`:''}</div>
+                  <span>${escapeHTML(name)}</span>
+                </div>
+                <div class="row" style="gap:6px">
+                  <button class="btn primary" data-acc="${req.id}" style="padding:6px 10px">принять</button>
+                  <button class="btn" data-rej="${req.id}" style="padding:6px 10px">отклонить</button>
+                </div>
+              </div>`;
+          }).join('');
+        }
+        if(!outgoing?.length){ inboxOut.innerHTML='<span class="muted">нет исходящих заявок</span>'; }
+        else{
+          inboxOut.innerHTML = outgoing.map(req=>{
+            const name = req.to?.display_name || 'Игрок';
+            const ava = req.to?.avatar_url || '';
+            return `
+              <div class="friend-item">
+                <div class="friend-left">
+                  <div class="friend-ava">${ava?`<img src="${ava}" style="width:100%;height:100%;object-fit:cover">`:''}</div>
+                  <span>${escapeHTML(name)}</span>
+                </div>
+                <span class="muted">ожидает</span>
+              </div>`;
+          }).join('');
+        }
+      }catch(e){
+        console.error(e);
+        inboxIn.textContent='ошибка загрузки';
+        inboxOut.textContent='ошибка загрузки';
+      }
+    }
+
+    on(inboxIn,'click', async (e)=>{
+      const acc = e.target.closest?.('[data-acc]'); const rej = e.target.closest?.('[data-rej]');
+      if(!acc && !rej) return;
+      if(!sbOk()) return;
+      try{
+        if(acc) await window.sb.respondFriendRequest(acc.dataset.acc, true);
+        if(rej) await window.sb.respondFriendRequest(rej.dataset.rej, false);
+        alert('Готово');
+        await Promise.all([refreshInbox(), loadFriends()]);
+      }catch(err){ console.error(err); alert('Ошибка обработки заявки'); }
+    });
+
+    /* ===== контекстное меню и модалка друга ===== */
+    on(document,'click',()=>hideFriendMenu());
+    on(openFriendProfileBtn,'click',()=>{ if(state.ctxFriendId){ openFriendProfile(state.ctxFriendId); hideFriendMenu(); } });
+    on($('.backdrop',friendModal),'click',()=>friendModal.classList.remove('show'));
+    on(closeFriend,'click',()=>friendModal.classList.remove('show'));
+    on(friendCommentSend,'click', sendFriendComment);
+
+    // ESC закрывает модалки/меню
+    on(document,'keydown',(e)=>{
+      if(e.key === 'Escape'){
+        friendModal.classList.remove('show');
+        modal.classList.remove('show');
+        hideFriendMenu();
+      }
+    });
+  })();
+  </script>
+</body>
+</html>
