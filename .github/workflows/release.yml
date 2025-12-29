@@ -3,14 +3,20 @@ name: Build & Publish Windows
 on:
   push:
     tags:
-      - 'v*.*.*'   # запускается при пуше тега vX.Y.Z
+      - 'v*.*.*'     # запускается на пуш тега vX.Y.Z
+
+permissions:
+  contents: write   # нужно для публикации релиза и ассетов
 
 jobs:
   build-win:
     runs-on: windows-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # чтобы electron-builder видел git-теги
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -23,10 +29,11 @@ jobs:
 
       - name: Build & publish (electron-builder)
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: npm run dist
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}   # твой секрет
+        run: npm run dist                     # electron-builder --win --publish always
 
-      - name: Upload artifacts (debug)
+      # опционально — артефакты для дебага
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
