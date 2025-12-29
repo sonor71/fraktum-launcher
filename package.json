@@ -52,12 +52,9 @@
       "createDesktopShortcut": true,
       "shortcutName": "Fraktum Launcher"
     },
-"publish": [{
-  "provider": "github",
-  "owner": "sonor71",
-  "repo": "fraktum-launcher",
-  "releaseType": "release"
-}]
+  "publish":[{"provider":"github","owner":"sonor71","repo":"fraktum-launcher","releaseType":"release"}]
+
+
 
       }
     ]
