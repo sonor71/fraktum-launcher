@@ -1,6 +1,6 @@
 {
   "name": "fraktum-launcher",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Fraktum Game Launcher",
   "main": "main.js",
   "author": "Fraktum Studio",
@@ -24,7 +24,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_GITHUB_USERNAME/YOUR_LAUNCHER_REPO.git"
+    "url": "https://github.com/sonor71/fraktum-launcher.git"
   },
   "build": {
     "appId": "com.fraktum.launcher",
@@ -52,10 +52,9 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "YOUR_GITHUB_USERNAME",
-        "repo": "YOUR_LAUNCHER_REPO",
+        "owner": "sonor71",
+        "repo": "fraktum-launcher",
         "releaseType": "release"
-        
       }
     ]
   }
