@@ -3,10 +3,10 @@ name: Build & Publish Windows
 on:
   push:
     tags:
-      - 'v*.*.*'     # запускается на пуш тега vX.Y.Z
+      - 'v*.*.*'         # запускается на пуш тега vX.Y.Z
 
 permissions:
-  contents: write   # нужно для публикации релиза и ассетов
+  contents: write        # нужно для публикации релиза
 
 jobs:
   build-win:
@@ -16,7 +16,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # чтобы electron-builder видел git-теги
+          fetch-depth: 0           # чтобы были теги
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -27,15 +27,40 @@ jobs:
       - name: Install deps
         run: npm ci
 
+      - name: Show versions
+        run: |
+          node -v
+          npm -v
+          npx electron-builder --version
+
       - name: Build & publish (electron-builder)
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}   # твой секрет
-        run: npm run dist                     # electron-builder --win --publish always
+          # Используем встроенный токен GitHub Actions
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # опционально — артефакты для дебага
-      - name: Upload artifacts
+          # Включаем подробные логи сборщика
+          ELECTRON_BUILDER_DEBUG: true
+          DEBUG: electron-builder
+        run: |
+          # сохраним лог отдельно — приложим артефактом
+          npx electron-builder --win --publish always 2>&1 | tee builder.log
+
+      - name: Check built files
+        if: always()
+        run: |
+          echo "== dist content =="
+          dir dist
+
+      - name: Upload dist artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/**
+
+      - name: Upload builder log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: builder-log
+          path: builder.log
