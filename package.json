@@ -1,6 +1,6 @@
 {
   "name": "fraktum-launcher",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Fraktum Game Launcher",
   "main": "main.js",
   "author": "Fraktum Studio",
@@ -49,12 +49,13 @@
       "createDesktopShortcut": true,
       "shortcutName": "Fraktum Launcher"
     },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "sonor71",
-        "repo": "fraktum-launcher",
-        "releaseType": "release"
+"publish": [{
+  "provider": "github",
+  "owner": "sonor71",
+  "repo": "fraktum-launcher",
+  "releaseType": "release"
+}]
+
       }
     ]
   }
