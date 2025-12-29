@@ -560,6 +560,33 @@ async function getRecentPlaytimes(limit = 10) {
     .slice(0, limit);
 }
 
+const { contextBridge } = require('electron');
+const { createClient } = require('@supabase/supabase-js');
+
+const supabaseUrl = 'https://<YOUR-REF>.supabase.co';
+const supabaseKey = '<YOUR-ANON-KEY>';
+const sb = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: true } });
+
+contextBridge.exposeInMainWorld('sb', {
+  // кто залогинен
+  getUserId: async () => (await sb.auth.getUser()).data.user?.id || null,
+
+  // получить подписанную ссылку на файл новеллы (живет 60 сек)
+  getNovelSignedUrl: async (path) => {
+    const { data, error } = await sb
+      .storage.from('builds')
+      .createSignedUrl(path, 60); // 60 секунд
+    if (error) throw error;
+    return data.signedUrl;
+  },
+
+  // логин по маг. ссылке/коду — как у тебя уже сделано
+  sendMagicLink: async (email) => sb.auth.signInWithOtp({ email }),
+  verifyOtp: async (email, token) => sb.auth.verifyOtp({ email, token, type: 'email' }),
+  signOut: async () => sb.auth.signOut(),
+});
+
+
 /* ===================== DEBUG HELPERS ===================== */
 function __list() { try { return Object.keys(window.sb || {}).sort(); } catch { return []; } }
 
