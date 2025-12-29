@@ -350,6 +350,30 @@ function setupIpc() {
   });
 }
 
+const { ipcMain, app } = require('electron');
+const https = require('https');
+const fs = require('fs');
+const path = require('path');
+
+ipcMain.handle('download-novel', async (_evt, { signedUrl, version }) => {
+  const gamesDir = path.join(app.getPath('userData'), 'games', 'novel', version || 'latest');
+  fs.mkdirSync(gamesDir, { recursive: true });
+  const dst = path.join(gamesDir, 'FraktumNovel-win.zip');
+
+  await new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(dst);
+    https.get(signedUrl, res => {
+      if (res.statusCode !== 200) {
+        reject(new Error('HTTP ' + res.statusCode)); return;
+      }
+      res.pipe(file);
+      file.on('finish', () => file.close(resolve));
+    }).on('error', reject);
+  });
+
+  return { ok: true, zip: dst, dir: gamesDir };
+});
+
 // ----------- ЖИЗНЕННЫЙ ЦИКЛ -----------
 app.setAppUserModelId('com.fraktum.launcher'); // для Win уведомлений/таскбара
 
