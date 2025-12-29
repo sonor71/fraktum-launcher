@@ -26,12 +26,15 @@
     "type": "git",
     "url": "https://github.com/sonor71/fraktum-launcher.git"
   },
-  "build": {
-    "appId": "com.fraktum.launcher",
-    "productName": "Fraktum Launcher",
-    "asar": true,
-    "directories": {
-      "output": "dist"
+ "build": {
+  "appId": "com.fraktum.launcher",
+  "productName": "Fraktum Launcher",
+  "asar": true,
+  "directories": { "output": "dist" },
+  "files": ["**/*","!node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}","!node_modules/.bin","!**/*.map"],
+  "win": { "target": "nsis" },
+  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "shortcutName": "Fraktum Launcher" },
+
     },
     "files": [
       "**/*",
