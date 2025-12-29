@@ -325,9 +325,62 @@
       ctxFriendId:null,
       selfId: null, // ← id текущего юзера (для серверных комментов к своему профилю)
     };
+    // где-то рядом со state
+state.novel = state.novel || { version: 'v1.0.0', installedDir: null };
+
+// вместо алерта “выбери exe” делаем скачивание, если не установлено
+on(btnPlay,'click', async ()=>{
+  try {
+    // если уже установлено — тут можешь запускать exe (через твой IPC run-game)
+    if (state.novel.installedDir) {
+      // TODO: run exe из installedDir
+      alert('Запуск новеллы!');
+      return;
+    }
+
+    // иначе — качаем
+    const relPath = `novel/${state.novel.version}/FraktumNovel-win.zip`;
+
+    const uid = await window.sb.getUserId();
+    if (!uid) { alert('Войдите, чтобы скачать игру'); return; }
+
+    btnPlay.disabled = true;
+    const prev = btnPlay.textContent;
+    btnPlay.textContent = 'скачиваем…';
+
+    const signedUrl = await window.sb.getNovelSignedUrl(relPath);
+    const res = await window.electron.invoke('download-novel', {
+      signedUrl,
+      version: state.novel.version
+    });
+
+    if (!res?.ok) throw new Error('download failed');
+
+    // (опционально) распаковать
+    const unzip = await window.electron.invoke('extract-zip', {
+      zip: res.zip,
+      to: res.dir
+    });
+    if (!unzip?.ok) throw new Error('extract failed');
+
+    state.novel.installedDir = res.dir;
+    save();
+
+    alert('Готово! Игра установлена.');
+    btnPlay.textContent = prev;
+    btnPlay.disabled = false;
+
+    // здесь можно сразу запускать exe из res.dir
+  } catch (e) {
+    console.error(e);
+    alert('Не удалось скачать/установить. Проверь интернет и войдите в аккаунт.');
+    btnPlay.disabled = false;
+    btnPlay.textContent = 'играть';
+  }
+});
     try{ const raw=localStorage.getItem('fl_state'); if(raw) Object.assign(state, JSON.parse(raw)); }catch(_){}
     const save = ()=>localStorage.setItem('fl_state', JSON.stringify(state));
-
+    
     /* ===== DOM ===== */
     const hero = $('#hero'), gameTitle=$('#gameTitle'), infoText=$('#infoText');
     const btnNovel=$('#btnNovel'), btnCards=$('#btnCards');
