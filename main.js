@@ -312,10 +312,26 @@ function setupAutoUpdate() {
     sendToRenderer('update:status', { state: 'checking' });
   });
 
-  autoUpdater.on('update-available', (info) => {
-    log.info('[Updater] available', info);
-    sendToRenderer('update:status', { state: 'available', version: info?.version || null });
-  });
+  autoUpdater.on('update-downloaded', (info) => {
+  log.info('[Updater] downloaded', info);
+  sendToRenderer('update:status', { state: 'downloaded', version: info?.version || null });
+
+  try {
+    const res = dialog.showMessageBoxSync(mainWin, {
+      type: 'question',
+      buttons: ['Перезапустить сейчас', 'Позже'],
+      defaultId: 0,
+      cancelId: 1,
+      message: `Доступна новая версия ${info?.version || ''}. Установить сейчас?`
+    });
+
+    if (res === 0) {
+      autoUpdater.quitAndInstall();
+    }
+  } catch (e) {
+    log.error('[Updater] update dialog failed', e);
+  }
+});
 
   autoUpdater.on('update-not-available', () => {
     log.info('[Updater] none');
