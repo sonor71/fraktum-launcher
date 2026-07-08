@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <title>Fraktum Launcher</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' file: data: blob: http://127.0.0.1:* http://localhost:* https://*.supabase.co https://api.github.com https://github.com https://objects.githubusercontent.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co; connect-src 'self' http://127.0.0.1:* http://localhost:* https://*.supabase.co https://api.github.com https://github.com https://objects.githubusercontent.com; media-src 'self' data: blob:; object-src 'none'; base-uri 'self';">
   <style>
     :root{
       --bg:#0b1120; --panel:#0e152a; --panel2:#0b142a; --card:#0f1833;
@@ -44,6 +45,13 @@
     .info-text{color:#c6d4f5}
 
     .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
+    .install-strip{display:flex;align-items:center;gap:12px;min-width:min(620px,100%);flex:1 1 520px}
+    .download-progress{display:grid;gap:6px;min-width:240px;flex:1 1 280px}
+    .download-progress-top{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:12px;font-weight:800}
+    .download-progress-top b{color:#dff7ff}
+    .download-progress-track{height:10px;border-radius:999px;background:rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.10);overflow:hidden;box-shadow:inset 0 1px 6px rgba(0,0,0,.45)}
+    .download-progress-fill{display:block;width:0%;height:100%;border-radius:inherit;background:linear-gradient(90deg,#27d3c0,#4ec2ff);box-shadow:0 0 18px rgba(62,183,255,.45);transition:width .22s ease}
     .btn{background:#0e1832;border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:10px;cursor:pointer}
     .btn.primary{background:linear-gradient(180deg,#27d3c0,#1bb3a2);border:0}
     .input,.select{background:#0e1832;border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:10px}
@@ -114,7 +122,7 @@
         <button id="btnNovel"  class="nav-btn active">новела</button>
         <button id="btnCards"  class="nav-btn">карточная игра</button>
       </nav>
-      <div class="side-note">Fraktum Launcher v0.1.1</div>
+      <div class="side-note">Fraktum Launcher v0.1.2</div>
     </aside>
 
     <!-- MAIN -->
@@ -137,18 +145,30 @@
         </div>
       </section>
 
-      <!-- exe + сейвы -->
+      <!-- game actions + сейвы -->
       <section class="card">
         <div class="row">
-          <button id="btnChooseExe" class="btn">Выбрать EXE</button>
-          <span id="exeLabel" class="muted">EXE не выбран</span>
+          <div class="install-strip">
+            <button id="btnInstallGame" class="btn primary">Скачать игру</button>
+            <div id="gameProgress" class="download-progress hidden" aria-hidden="true">
+              <div class="download-progress-top">
+                <span id="gameProgressLabel">Скачивание</span>
+                <b id="gameProgressPercent">0%</b>
+              </div>
+              <div class="download-progress-track">
+                <span id="gameProgressFill" class="download-progress-fill"></span>
+              </div>
+            </div>
+            <span id="gameInstallStatus" class="muted">готово</span>
+          </div>
+
           <div style="flex:1"></div>
           <input id="saveFile" type="file" accept=".zip" class="input" style="max-width:280px">
           <select id="slot" class="select" style="width:120px">
             <option value="slot1">slot1</option><option value="slot2">slot2</option>
           </select>
-          <button id="btnUpload" class="btn primary">Загрузить</button>
-          <button id="btnDownload" class="btn">Скачать</button>
+          <button id="btnUpload" class="btn primary">Загрузить сейв</button>
+          <button id="btnDownload" class="btn">Скачать сейв</button>
         </div>
         <div id="saveMeta" class="muted" style="margin-top:6px">slot1: пусто | slot2: пусто</div>
       </section>
@@ -308,169 +328,381 @@
 
   <script>
   ;(() => {
-    const $  = (s, r=document)=>r.querySelector(s);
-    const on = (el,ev,cb)=>el&&el.addEventListener(ev,cb);
-    const sbOk = () => typeof window.sb === 'object' && window.sb;
+    'use strict';
 
-    /* ===== STATE ===== */
-    const state = {
-      game:'novel',
-      exeName:null,
-      saves:{ slot1:null, slot2:null },
-      profile:{ nick:'', email:'user@example.com', avatar:'' },
-      comments:[],
-      remember:false,
-      auth:false,
-      friends:[],
-      ctxFriendId:null,
-      selfId: null, // ← id текущего юзера (для серверных комментов к своему профилю)
+    const $ = (s, r = document) => r.querySelector(s);
+    const on = (el, ev, cb) => el && el.addEventListener(ev, cb);
+    const sbOk = () => typeof window.sb === 'object' && !!window.sb;
+    const launcher = () => window.launcher || window.api || null;
+
+    const defaultState = {
+      game: 'novel',
+      exeName: null,
+      saves: { slot1: null, slot2: null },
+      profile: { nick: '', email: '', avatar: '' },
+      comments: [],
+      remember: false,
+      auth: false,
+      friends: [],
+      ctxFriendId: null,
+      selfId: null,
+      novel: { version: 'v1.0.7', installedDir: null, zipPath: null }
     };
-    // где-то рядом со state
-state.novel = state.novel || { version: 'v1.0.7', installedDir: null };
 
-// вместо алерта “выбери exe” делаем скачивание, если не установлено
-on(btnPlay,'click', async ()=>{
-  try {
-    // если уже установлено — тут можешь запускать exe (через твой IPC run-game)
-    if (state.novel.installedDir) {
-      // TODO: run exe из installedDir
-      alert('Запуск новеллы!');
-      return;
-    }
+    const state = structuredClone ? structuredClone(defaultState) : JSON.parse(JSON.stringify(defaultState));
+    try {
+      const raw = localStorage.getItem('fl_state');
+      if (raw) Object.assign(state, JSON.parse(raw));
+    } catch (_) {}
+    state.saves ||= { slot1: null, slot2: null };
+    state.profile ||= { nick: '', email: '', avatar: '' };
+    state.comments ||= [];
+    state.friends ||= [];
+    state.novel ||= { version: 'v1.0.7', installedDir: null, zipPath: null };
+    state.novel.version ||= 'v1.0.7';
 
-    // иначе — качаем
-    const relPath = `novel/${state.novel.version}/FraktumNovel-win.zip`;
+    const save = () => localStorage.setItem('fl_state', JSON.stringify(state));
 
-    const uid = await window.sb.getUserId();
-    if (!uid) { alert('Войдите, чтобы скачать игру'); return; }
-
-    btnPlay.disabled = true;
-    const prev = btnPlay.textContent;
-    btnPlay.textContent = 'скачиваем…';
-
-    const signedUrl = await window.sb.getNovelSignedUrl(relPath);
-    const res = await window.electron.invoke('download-novel', {
-      signedUrl,
-      version: state.novel.version
-    });
-
-    if (!res?.ok) throw new Error('download failed');
-
-    // (опционально) распаковать
-    const unzip = await window.electron.invoke('extract-zip', {
-      zip: res.zip,
-      to: res.dir
-    });
-    if (!unzip?.ok) throw new Error('extract failed');
-
-    state.novel.installedDir = res.dir;
-    save();
-
-    alert('Готово! Игра установлена.');
-    btnPlay.textContent = prev;
-    btnPlay.disabled = false;
-
-    // здесь можно сразу запускать exe из res.dir
-  } catch (e) {
-    console.error(e);
-    alert('Не удалось скачать/установить. Проверь интернет и войдите в аккаунт.');
-    btnPlay.disabled = false;
-    btnPlay.textContent = 'играть';
-  }
-});
-    try{ const raw=localStorage.getItem('fl_state'); if(raw) Object.assign(state, JSON.parse(raw)); }catch(_){}
-    const save = ()=>localStorage.setItem('fl_state', JSON.stringify(state));
-    
     /* ===== DOM ===== */
-    const hero = $('#hero'), gameTitle=$('#gameTitle'), infoText=$('#infoText');
-    const btnNovel=$('#btnNovel'), btnCards=$('#btnCards');
-    const chipName=$('#chipName'), chipAva=$('#chipAva'), userChip=$('#userChip');
-
-    const btnPlay=$('#btnPlay'), btnChooseExe=$('#btnChooseExe'), exeLabel=$('#exeLabel');
-
-    const modal=$('#modal'), accClose=$('#accClose');
-    const tabProfileBtn=$('#tabProfileBtn'), tabLoginBtn=$('#tabLoginBtn'), tabInboxBtn=$('#tabInboxBtn');
-    const tabProfile=$('#tabProfile'), tabLogin=$('#tabLogin'), tabInbox=$('#tabInbox');
-
-    const btnEdit=$('#btnEdit'), editor=$('#editor'), avatarFile=$('#avatarFile'), avatarPreview=$('#avatarPreview');
-    const nick=$('#nick'), btnSaveNick=$('#btnSaveNick'), btnSignOut=$('#btnSignOut');
-
-    const friendSearch=$('#friendSearch'), btnFind=$('#btnFind');
-    const friendsList=$('#friendsList');
-
-    const commentsList=$('#commentsList'), commentText=$('#commentText'), btnComment=$('#btnComment');
-
-    const loginEmail=$('#loginEmail'), loginCode=$('#loginCode'), btnLogin=$('#btnLogin'), rememberMe=$('#rememberMe');
-    const btnSendCode=$('#btnSendCode');
-
-    const saveFile=$('#saveFile'), btnUpload=$('#btnUpload'), btnDownload=$('#btnDownload'), slot=$('#slot'), saveMeta=$('#saveMeta');
-
-    // inbox
-    const inboxIn=$('#inboxIn'), inboxOut=$('#inboxOut');
-
-    // friend menu + modal
-    const friendMenu=$('#friendMenu'), openFriendProfileBtn=$('#openFriendProfile');
-    const friendModal=$('#friendModal'), fAva=$('#fAva'), fDot=$('#fDot'), fNick=$('#fNick'), fStatus=$('#fStatus');
-    const closeFriend=$('#closeFriend');
-
-    /* === ADD: DOM комментариев друга === */
-    const friendComments = $('#friendComments');
-    const friendCommentText = $('#friendCommentText');
-    const friendCommentSend = $('#friendCommentSend');
+    const hero = $('#hero'), gameTitle = $('#gameTitle'), infoText = $('#infoText');
+    const btnNovel = $('#btnNovel'), btnCards = $('#btnCards');
+    const chipName = $('#chipName'), chipAva = $('#chipAva'), userChip = $('#userChip');
+    const btnPlay = $('#btnPlay');
+    const btnInstallGame = $('#btnInstallGame'), gameInstallStatus = $('#gameInstallStatus');
+    const gameProgress = $('#gameProgress'), gameProgressFill = $('#gameProgressFill'), gameProgressPercent = $('#gameProgressPercent'), gameProgressLabel = $('#gameProgressLabel');
+    let cardGameStatus = { installed: false, version: null, latestVersion: null, updateAvailable: false, needsInstall: true };
+    const modal = $('#modal'), accClose = $('#accClose');
+    const tabProfileBtn = $('#tabProfileBtn'), tabLoginBtn = $('#tabLoginBtn'), tabInboxBtn = $('#tabInboxBtn');
+    const tabProfile = $('#tabProfile'), tabLogin = $('#tabLogin'), tabInbox = $('#tabInbox');
+    const btnEdit = $('#btnEdit'), editor = $('#editor'), avatarFile = $('#avatarFile'), avatarPreview = $('#avatarPreview');
+    const nick = $('#nick'), btnSaveNick = $('#btnSaveNick'), btnSignOut = $('#btnSignOut');
+    const friendSearch = $('#friendSearch'), btnFind = $('#btnFind'), friendsList = $('#friendsList');
+    const commentsList = $('#commentsList'), commentText = $('#commentText'), btnComment = $('#btnComment');
+    const loginEmail = $('#loginEmail'), loginCode = $('#loginCode'), btnLogin = $('#btnLogin'), rememberMe = $('#rememberMe');
+    const btnSendCode = $('#btnSendCode');
+    const saveFile = $('#saveFile'), btnUpload = $('#btnUpload'), btnDownload = $('#btnDownload'), slot = $('#slot'), saveMeta = $('#saveMeta');
+    const saveControls = [saveFile, slot, btnUpload, btnDownload, saveMeta].filter(Boolean);
+    const inboxIn = $('#inboxIn'), inboxOut = $('#inboxOut');
+    const friendMenu = $('#friendMenu'), openFriendProfileBtn = $('#openFriendProfile');
+    const friendModal = $('#friendModal'), fAva = $('#fAva'), fDot = $('#fDot'), fNick = $('#fNick'), fStatus = $('#fStatus');
+    const closeFriend = $('#closeFriend');
+    const friendComments = $('#friendComments'), friendCommentText = $('#friendCommentText'), friendCommentSend = $('#friendCommentSend');
+    const friendDots = document.querySelectorAll('.friends-row .friend-dot');
     let currentFriendId = null;
 
-    /* ===== helpers ===== */
-    const escapeHTML = (s) => String(s||'')
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    const escapeHTML = (s) => String(s || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
 
-    /* ===== view ===== */
-    function applyGame(){
-      const isNovel = state.game==='novel';
-      btnNovel.classList.toggle('active', isNovel);
-      btnCards.classList.toggle('active', !isNovel);
-      hero.style.backgroundImage = isNovel ? "url('./assets/novel.jpg')" : "url('./assets/cards.jpg')";
-      gameTitle.textContent = isNovel ? 'Новела' : 'Карточная игра';
-      infoText.textContent = isNovel
-        ? 'Информация об игре: ветвящийся сюжет, выборы и концовки.'
-        : 'Собери колоду и сразись. Кроссплатформенные сейвы.';
-    }
-    function applyProfile(){
-      chipName.textContent = state.profile.nick || state.profile.email || 'User';
-      if(state.profile.avatar){
-        chipAva.innerHTML = '<img src="'+state.profile.avatar+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
-        avatarPreview.src = state.profile.avatar; avatarPreview.style.display='block';
-      }else{
-        chipAva.textContent = (state.profile.nick||'U').slice(0,1).toUpperCase();
-        avatarPreview.removeAttribute('src'); avatarPreview.style.display='none';
+    function setBusy(button, busy, text) {
+      if (!button) return;
+      if (busy) {
+        button.dataset.prevText = button.textContent;
+        button.textContent = text || 'загрузка…';
+        button.disabled = true;
+      } else {
+        button.textContent = button.dataset.prevText || button.textContent || 'готово';
+        button.disabled = false;
       }
     }
-    function applyExe(){ exeLabel.textContent = state.exeName ? 'EXE: '+state.exeName : 'EXE не выбран'; }
-    function renderComments(){
-      if(!state.comments.length){ commentsList.textContent='Комментов пока нет.'; return; }
-      commentsList.innerHTML = state.comments.slice(-8).map(c=>
+
+    function secondsLeft(ms) {
+      return Math.max(0, Math.ceil((Number(ms || 0) - Date.now()) / 1000));
+    }
+
+    function lockOtpFor(seconds) {
+      state.otpNextAllowedAt = Date.now() + Math.max(1, Number(seconds || 15)) * 1000;
+      save();
+      refreshOtpButton();
+    }
+
+    function refreshOtpButton() {
+      if (!btnSendCode) return;
+      const left = secondsLeft(state.otpNextAllowedAt);
+      if (left > 0) {
+        btnSendCode.disabled = true;
+        btnSendCode.textContent = `подожди ${left}с`;
+        setTimeout(refreshOtpButton, 1000);
+      } else {
+        btnSendCode.disabled = false;
+        btnSendCode.textContent = 'отправить код';
+      }
+    }
+
+    function setInstallStatus(text) {
+      if (gameInstallStatus) gameInstallStatus.textContent = text || '';
+    }
+
+    function setProgressVisible(visible) {
+      if (!gameProgress) return;
+      gameProgress.classList.toggle('hidden', !visible);
+      gameProgress.setAttribute('aria-hidden', visible ? 'false' : 'true');
+    }
+
+    function setGameProgress(percent, label = 'Скачивание') {
+      const safe = Math.max(0, Math.min(100, Math.round(Number(percent || 0))));
+      setProgressVisible(true);
+      if (gameProgressFill) gameProgressFill.style.width = `${safe}%`;
+      if (gameProgressPercent) gameProgressPercent.textContent = `${safe}%`;
+      if (gameProgressLabel) gameProgressLabel.textContent = label;
+    }
+
+    function hideGameProgressSoon() {
+      window.setTimeout(() => setProgressVisible(false), 850);
+    }
+
+    function setSaveControlsVisible(visible) {
+      saveControls.forEach((el) => {
+        el.style.display = visible ? '' : 'none';
+      });
+    }
+
+    function updateCardGameButtons() {
+      if (state.game !== 'cards') return;
+      const installed = !!cardGameStatus?.installed;
+      const updateAvailable = !!cardGameStatus?.updateAvailable;
+      const latest = cardGameStatus?.latestVersion;
+      const current = cardGameStatus?.version;
+
+      if (btnPlay) {
+        btnPlay.textContent = !installed ? 'скачать' : updateAvailable ? 'обновить' : 'играть';
+      }
+
+      if (btnInstallGame) {
+        btnInstallGame.textContent = !installed
+          ? 'Скачать карточную игру'
+          : updateAvailable
+            ? 'Обновить карточную игру'
+            : 'Переустановить карточную игру';
+      }
+
+      if (updateAvailable) {
+        setInstallStatus(`доступно обновление${latest ? `: ${latest}` : ''}${current ? ` • установлено ${current}` : ''}`);
+      } else if (installed) {
+        setInstallStatus(`карточная игра готова${current ? ` • ${current}` : ''}`);
+      } else {
+        setInstallStatus('карточная игра не установлена');
+      }
+    }
+
+    async function refreshCardGameStatus({ checkLatest = true } = {}) {
+      if (state.game !== 'cards') return null;
+      const api = launcher();
+      if (!api?.getCardGameStatus) {
+        setInstallStatus('API карточной игры недоступен');
+        return null;
+      }
+      try {
+        const status = await api.getCardGameStatus({ checkLatest });
+        if (status) cardGameStatus = status;
+        updateCardGameButtons();
+        return status;
+      } catch (error) {
+        logSoft(error);
+        setInstallStatus(friendlyError(error, 'не удалось проверить обновление карточной игры'));
+        return null;
+      }
+    }
+
+    function wireCardGameEvents() {
+      const api = launcher();
+      if (!api?.onGameStatus && !api?.onGameProgress) return;
+
+      api?.onGameStatus?.((payload) => {
+        if (!payload || payload.gameId !== 'cards') return;
+        const labels = {
+          checking: 'проверяем карточную игру…',
+          downloading: 'скачиваем карточную игру…',
+          extracting: 'распаковываем карточную игру…',
+          ready: 'карточная игра готова',
+          launching: 'запускаем карточную игру…',
+          error: `ошибка: ${payload.error || 'не удалось скачать/запустить'}`,
+        };
+        setInstallStatus(labels[payload.state] || String(payload.state || ''));
+
+        if (payload.state === 'checking') setGameProgress(0, 'Проверка обновления');
+        if (payload.state === 'extracting') setGameProgress(100, 'Распаковка');
+        if (payload.state === 'ready') {
+          if (payload.version) cardGameStatus.version = payload.version;
+          cardGameStatus.installed = true;
+          cardGameStatus.updateAvailable = false;
+          setGameProgress(100, 'Готово');
+          hideGameProgressSoon();
+          updateCardGameButtons();
+        }
+        if (payload.state === 'error') {
+          setProgressVisible(false);
+        }
+
+        if (payload.state === 'downloading' || payload.state === 'extracting' || payload.state === 'checking') {
+          if (btnInstallGame) btnInstallGame.disabled = true;
+          if (btnPlay) btnPlay.disabled = true;
+        } else {
+          if (btnInstallGame) btnInstallGame.disabled = false;
+          if (btnPlay) btnPlay.disabled = false;
+        }
+      });
+
+      api?.onGameProgress?.((payload) => {
+        if (!payload || payload.gameId !== 'cards') return;
+        const percent = Math.max(0, Math.min(100, Math.round(Number(payload.percent || 0))));
+        setGameProgress(percent, 'Скачивание карточной игры');
+        setInstallStatus(`скачиваем карточную игру ${percent}%`);
+      });
+    }
+
+
+    function isNetworkError(error) {
+      return /failed to fetch|network|connection_reset|err_connection_reset|err_http2_ping_failed|http2_ping_failed|ping_failed|internet|fetch failed|supabase_network_error|supabase_timeout|aborterror|aborted a request|user aborted/i.test(String(error?.message || error || '') + ' ' + String(error?.code || ''));
+    }
+
+    function friendlyError(error, fallback) {
+      const message = String(error?.message || error || '').trim();
+      const wait = message.match(/after\s+(\d+)\s+seconds/i)?.[1];
+      if (wait) return `Supabase временно ограничил отправку кода. Подожди ${wait} сек. и нажми снова.`;
+      if (/GitHub Release не найден|GitHub API failed: HTTP 404|Not Found/i.test(message)) {
+        return 'GitHub Release карточной игры не найден. Проверь launcher.config.json: githubOwner/githubRepo, сделай публичный опубликованный Release и прикрепи ZIP с index.html в корне. Быстрый обход: пропиши прямую ссылку на ZIP в cardGame.directZipUrl.';
+      }
+      if (/нет ZIP-ассета карточной игры|archive does not contain index.html/i.test(message)) {
+        return 'В GitHub Release нет правильного ZIP. Нужен архив собранной игры, где index.html лежит прямо в корне ZIP, а не внутри лишней папки.';
+      }
+      if (isNetworkError(error)) {
+        return 'Нет стабильного соединения с Supabase. Запрос был сброшен/остановлен. Это не ошибка SQL/RLS. Проверь VPN/прокси, антивирус/фаервол, интернет и доступ к supabase.co.';
+      }
+      return message || fallback || 'Неизвестная ошибка';
+    }
+
+    function logSoft(error) {
+      if (isNetworkError(error)) console.warn('[network]', friendlyError(error));
+      else console.error(error);
+    }
+
+    document.addEventListener('error', (event) => {
+      const target = event.target;
+      if (target && target.tagName === 'IMG') {
+        target.removeAttribute('src');
+        target.style.display = 'none';
+      }
+    }, true);
+
+    function getDisplayName() {
+      return state.profile.nick || state.profile.email || 'User';
+    }
+
+    function applyGame() {
+      const isNovel = state.game === 'novel';
+      btnNovel?.classList.toggle('active', isNovel);
+      btnCards?.classList.toggle('active', !isNovel);
+      if (hero) hero.style.backgroundImage = isNovel ? "url('./assets/novel.jpg')" : "url('./assets/cards.jpg')";
+      if (gameTitle) gameTitle.textContent = isNovel ? 'Новела' : 'Карточная игра';
+      if (infoText) {
+        infoText.textContent = isNovel
+          ? 'Информация об игре: ветвящийся сюжет, выборы и концовки.'
+          : 'Скачай карточную игру из GitHub Release и запускай её прямо в лаунчере.';
+      }
+
+      setProgressVisible(false);
+      setSaveControlsVisible(isNovel);
+
+      if (isNovel) {
+        if (btnInstallGame) btnInstallGame.textContent = 'Скачать новеллу';
+        if (btnPlay) btnPlay.textContent = 'играть';
+        setInstallStatus('Новелла скачивается из Supabase builds.');
+      } else {
+        if (btnInstallGame) btnInstallGame.textContent = 'Проверить карточную игру';
+        if (btnPlay) btnPlay.textContent = 'проверка…';
+        setInstallStatus('проверяем установленную версию карточной игры…');
+        refreshCardGameStatus({ checkLatest: true });
+      }
+    }
+
+    function applyProfile() {
+      if (chipName) chipName.textContent = getDisplayName();
+      if (state.profile.avatar) {
+        if (chipAva) chipAva.innerHTML = `<img src="${state.profile.avatar}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+        if (avatarPreview) { avatarPreview.src = state.profile.avatar; avatarPreview.style.display = 'block'; }
+      } else {
+        if (chipAva) { chipAva.innerHTML = ''; chipAva.textContent = getDisplayName().slice(0, 1).toUpperCase(); }
+        if (avatarPreview) { avatarPreview.removeAttribute('src'); avatarPreview.style.display = 'none'; }
+      }
+    }
+
+    function applyExe() {
+      // EXE selection was removed from the public launcher UI.
+      // Keep this as a safe no-op because older profile/save code can still call it.
+    }
+
+    function renderComments() {
+      if (!commentsList) return;
+      if (!state.comments.length) { commentsList.textContent = 'Комментов пока нет.'; return; }
+      commentsList.innerHTML = state.comments.slice(-8).map(c =>
         `<div class="item"><span>${escapeHTML(c.author)}</span><span class="muted">${new Date(c.ts).toLocaleString()}</span></div>
          <div class="muted" style="margin:6px 0 8px 6px">${escapeHTML(c.text)}</div>`
       ).join('');
     }
-    function renderSaves(){
-      const s1 = state.saves.slot1 ? `slot1: ${state.saves.slot1.name} • ${(state.saves.slot1.size/1024/1024).toFixed(1)} МБ` : 'slot1: пусто';
-      const s2 = state.saves.slot2 ? `slot2: ${state.saves.slot2.name} • ${(state.saves.slot2.size/1024/1024).toFixed(1)} МБ` : 'slot2: пусто';
+
+    function renderSaves() {
+      if (!saveMeta) return;
+      const s1 = state.saves.slot1 ? `slot1: ${state.saves.slot1.name} • ${(state.saves.slot1.size / 1024 / 1024).toFixed(1)} МБ` : 'slot1: пусто';
+      const s2 = state.saves.slot2 ? `slot2: ${state.saves.slot2.name} • ${(state.saves.slot2.size / 1024 / 1024).toFixed(1)} МБ` : 'slot2: пусто';
       saveMeta.textContent = `${s1} | ${s2}`;
     }
 
-    /* ===== NEW: Друзья ===== */
-    function renderFriends(){
-      if(!friendsList) return;
+    function renderFriendDots() {
+      if (!friendDots?.length) return;
+      friendDots.forEach((dot, i) => {
+        const f = state.friends[i];
+        dot.innerHTML = '';
+        dot.style.overflow = 'hidden';
+        dot.style.cursor = f ? 'pointer' : 'default';
+        dot.onclick = null;
+
+        if (!f) {
+          const s = document.createElement('span');
+          s.className = 's';
+          dot.appendChild(s);
+          dot.title = '';
+          return;
+        }
+
+        if (f.avatar_url) {
+          const img = document.createElement('img');
+          img.src = f.avatar_url;
+          img.alt = '';
+          img.style.width = '100%';
+          img.style.height = '100%';
+          img.style.objectFit = 'cover';
+          img.style.display = 'block';
+          img.style.borderRadius = '50%';
+          dot.appendChild(img);
+        }
+
+        const s = document.createElement('span');
+        s.className = 's';
+        s.style.background = f.online ? 'var(--ok)' : 'var(--offline)';
+        dot.appendChild(s);
+        dot.title = f.display_name || 'Игрок';
+        dot.onclick = () => openFriendProfile(f.id);
+      });
+    }
+
+    function renderFriends() {
+      if (!friendsList) return;
       friendsList.innerHTML = '';
-      if(!state.friends.length){
+
+      if (!state.friends.length) {
         const empty = document.createElement('div');
         empty.className = 'muted';
         empty.textContent = 'Друзей пока нет.';
         friendsList.appendChild(empty);
+        renderFriendDots();
         return;
       }
-      state.friends.forEach(f=>{
+
+      state.friends.forEach(f => {
         const row = document.createElement('div');
         row.className = 'friend-item';
         row.dataset.uid = f.id;
@@ -480,9 +712,10 @@ on(btnPlay,'click', async ()=>{
 
         const ava = document.createElement('div');
         ava.className = 'friend-ava';
-        if(f.avatar_url){
-          ava.innerHTML = `<img src="${f.avatar_url}${f.avatar_url.includes('?')?'&':'?'}v=${Date.now()}" style="width:100%;height:100%;object-fit:cover">`;
+        if (f.avatar_url) {
+          ava.innerHTML = `<img src="${f.avatar_url}" alt="" style="width:100%;height:100%;object-fit:cover">`;
         }
+
         const dot = document.createElement('span');
         dot.className = 'friend-dot-s';
         dot.style.background = f.online ? 'var(--ok)' : 'var(--offline)';
@@ -495,464 +728,545 @@ on(btnPlay,'click', async ()=>{
         right.className = 'muted';
         right.textContent = f.online ? 'в сети' : 'оффлайн';
 
-        left.appendChild(ava); left.appendChild(name);
-        row.appendChild(left); row.appendChild(right);
+        left.appendChild(ava);
+        left.appendChild(name);
+        row.appendChild(left);
+        row.appendChild(right);
 
-        // контекстное меню (ПКМ)
-        row.addEventListener('contextmenu', (e)=>{
+        row.addEventListener('contextmenu', (e) => {
           e.preventDefault();
           state.ctxFriendId = f.id;
-          friendMenu.style.left = e.clientX+'px';
-          friendMenu.style.top  = e.clientY+'px';
-          friendMenu.style.display = 'block';
+          if (friendMenu) {
+            friendMenu.style.left = `${e.clientX}px`;
+            friendMenu.style.top = `${e.clientY}px`;
+            friendMenu.style.display = 'block';
+          }
         });
-
-        // ЛКМ — сразу открыть профиль
-        row.addEventListener('click', ()=>openFriendProfile(f.id));
-
+        row.addEventListener('click', () => openFriendProfile(f.id));
         friendsList.appendChild(row);
-        
-        function renderFriends(){
-  // ...твоя текущая логика...
-  friendsList.appendChild(row);
-  // ...
-  renderFriendDots(); // ← ДОБАВЬ В КОНЦЕ
-}
-
-async function loadFriends(){
-  // ...твоя текущая логика...
-  save(); renderFriends();
-  renderFriendDots(); // ← на всякий случай после обновления
-}
-
       });
 
-      // === QUICK FRIEND DOTS (заполняем 5 кружков) ===
-const friendDots = document.querySelectorAll('.friends-row .friend-dot');
-
-function renderFriendDots() {
-  if (!friendDots?.length) return;
-  friendDots.forEach((dot, i) => {
-    const f = state.friends[i];           // берём первых 5 друзей
-    dot.innerHTML = '';                   // чистим содержимое
-    dot.style.overflow = 'hidden';
-    dot.style.cursor = f ? 'pointer' : 'default';
-
-    if (f) {
-      // аватар
-      const img = document.createElement('img');
-      const src = f.avatar_url ? `${f.avatar_url}${f.avatar_url.includes('?')?'&':'?'}v=${Date.now()}` : '';
-      if (src) {
-        img.src = src;
-        img.style.width = '100%';
-        img.style.height = '100%';
-        img.style.objectFit = 'cover';
-        img.style.display = 'block';
-        img.style.borderRadius = '50%';
-        dot.appendChild(img);
-      }
-      // индикатор онлайна
-      const s = document.createElement('span');
-      s.className = 's';
-      s.style.background = f.online ? 'var(--ok)' : 'var(--offline)';
-      dot.appendChild(s);
-
-      dot.title = f.display_name || 'Игрок';
-      dot.onclick = () => openFriendProfile(f.id);
-    } else {
-      // пустой кружок как раньше
-      const s = document.createElement('span');
-      s.className = 's';
-      dot.appendChild(s);
-      dot.title = '';
-      dot.onclick = null;
+      renderFriendDots();
     }
-  });
-}
 
-    }
-    async function loadFriends(){
-      try{
-        if(!sbOk()) return;
+    async function loadFriends() {
+      try {
+        if (!sbOk() || !window.sb.listFriends) { renderFriends(); return; }
         const arr = await window.sb.listFriends();
         state.friends = Array.isArray(arr) ? arr : [];
-        save(); renderFriends();
-      }catch(e){ console.debug(e); }
+        save();
+        renderFriends();
+      } catch (e) {
+        console.debug(e);
+        renderFriends();
+      }
     }
-    
-    function resetLocalProfileToGuest(){
-  state.profile = { nick:'', email:'', avatar:'' };
-  chipName.textContent = 'User';
-  chipAva.innerHTML = '';            // убираем старую картинку
-  chipAva.textContent = 'U';         // ставим букву
-  avatarPreview.removeAttribute('src');
-  avatarPreview.style.display='none';
-}
 
-    function hideFriendMenu(){ friendMenu.style.display='none'; state.ctxFriendId=null; }
+    function resetLocalProfileToGuest() {
+      state.profile = { nick: '', email: '', avatar: '' };
+      applyProfile();
+      if (commentsList) commentsList.textContent = 'Комментов пока нет.';
+    }
 
-    /* === ADD: Комментарии друга === */
-    function renderFriendCommentsList(list){
-      if(!friendComments) return;
-      if(!list || !list.length){
+    function hideFriendMenu() {
+      if (friendMenu) friendMenu.style.display = 'none';
+      state.ctxFriendId = null;
+    }
+
+    function renderFriendCommentsList(list) {
+      if (!friendComments) return;
+      if (!list?.length) {
         friendComments.innerHTML = '<div class="muted">Комментариев пока нет.</div>';
         return;
       }
       friendComments.innerHTML = list.map(c => `
         <div class="item" style="display:flex;align-items:center;justify-content:space-between;padding:10px;border:1px solid var(--border);background:#0e1832;border-radius:12px;margin-top:8px">
-          <span>${escapeHTML(c.author_name||'Игрок')}</span>
-          <span class="muted">${new Date(c.ts||Date.now()).toLocaleString()}</span>
+          <span>${escapeHTML(c.author_name || 'Игрок')}</span>
+          <span class="muted">${new Date(c.ts || Date.now()).toLocaleString()}</span>
         </div>
-        <div class="muted" style="margin:6px 0 8px 6px">${escapeHTML(c.text||'')}</div>
+        <div class="muted" style="margin:6px 0 8px 6px">${escapeHTML(c.text || '')}</div>
       `).join('');
     }
-    async function loadFriendComments(uid){
-      try{
-        if(sbOk() && window.sb.getComments){
-          const arr = await window.sb.getComments(uid);
-          renderFriendCommentsList(arr);
-        }else{
-          renderFriendCommentsList([]);
-        }
-      }catch(e){
-        console.error(e);
+
+    async function loadFriendComments(uid) {
+      try {
+        if (sbOk() && window.sb.getComments) renderFriendCommentsList(await window.sb.getComments(uid));
+        else renderFriendCommentsList([]);
+      } catch (e) {
+        logSoft(e);
         renderFriendCommentsList([]);
       }
     }
-    async function sendFriendComment(){
-      const txt = (friendCommentText?.value||'').trim();
-      if(!txt) return;
-      if(!currentFriendId){ alert('Игрок не выбран'); return; }
-      try{
-        if(sbOk() && window.sb.addComment){
-          await window.sb.addComment(currentFriendId, txt);
-          friendCommentText.value='';
-          await loadFriendComments(currentFriendId);
-        }else{
-          alert('Нет соединения с Supabase');
-        }
-      }catch(e){
-        console.error(e);
-        alert('Не удалось отправить комментарий');
+
+    async function sendFriendComment() {
+      const txt = (friendCommentText?.value || '').trim();
+      if (!txt) return;
+      if (!currentFriendId) { alert('Игрок не выбран'); return; }
+      try {
+        if (!sbOk() || !window.sb.addComment) { alert('Нет соединения с Supabase'); return; }
+        await window.sb.addComment(currentFriendId, txt);
+        friendCommentText.value = '';
+        await loadFriendComments(currentFriendId);
+      } catch (e) {
+        logSoft(e);
+        alert(friendlyError(e, 'Не удалось отправить комментарий'));
       }
     }
-async function loadMyComments(){
-  try{
-    // если нет авторизации/ID — показываем локальный фоллбэк
-    if(!state.auth || !state.selfId || !sbOk() || !window.sb.getComments){
-      renderComments(); // твой локальный рендер (оставляем фоллбэк)
-      return;
-    }
-    const list = await window.sb.getComments(state.selfId);
-    if(!list || !list.length){
-      commentsList.textContent = 'Комментов пока нет.';
-      return;
-    }
-    commentsList.innerHTML = list.slice(0,50).map(c =>
-      `<div class="item"><span>${c.author_name||'Игрок'}</span><span class="muted">${new Date(c.ts).toLocaleString()}</span></div>
-       <div class="muted" style="margin:6px 0 8px 6px">${c.text||''}</div>`
-    ).join('');
-  }catch(e){
-    console.error(e);
-    // на ошибке — не падаем, показываем локальные, если есть
-    renderComments();
-  }
-}
 
-async function addCommentToMyProfile(text){
-  const t = String(text||'').trim();
-  if(!t) return;
-  // если нет онлайна — пишем в локальный фоллбэк
-  if(!state.auth || !state.selfId || !sbOk() || !window.sb.addComment){
-    state.comments.push({ author: state.profile.nick || 'Гость', text:t, ts:Date.now() });
-    save(); renderComments();
-    return;
-  }
-  try{
-    await window.sb.addComment(state.selfId, t);
-    await loadMyComments();
-  }catch(e){
-    console.error(e);
-    // фоллбэк на локал, чтобы юзер не потерял текст
-    state.comments.push({ author: state.profile.nick || 'Гость', text:t, ts:Date.now() });
-    save(); renderComments();
-  }
-}
+    async function loadMyComments() {
+      try {
+        if (!state.auth || !state.selfId || !sbOk() || !window.sb.getComments) { renderComments(); return; }
+        const list = await window.sb.getComments(state.selfId);
+        if (!list?.length) { commentsList.textContent = 'Комментов пока нет.'; return; }
+        commentsList.innerHTML = list.slice(0, 50).map(c =>
+          `<div class="item"><span>${escapeHTML(c.author_name || 'Игрок')}</span><span class="muted">${new Date(c.ts).toLocaleString()}</span></div>
+           <div class="muted" style="margin:6px 0 8px 6px">${escapeHTML(c.text || '')}</div>`
+        ).join('');
+      } catch (e) {
+        logSoft(e);
+        renderComments();
+      }
+    }
 
-    async function openFriendProfile(uid){
-      try{
+    async function addCommentToMyProfile(text) {
+      const t = String(text || '').trim();
+      if (!t) return;
+      if (!state.auth || !state.selfId || !sbOk() || !window.sb.addComment) {
+        state.comments.push({ author: state.profile.nick || 'Гость', text: t, ts: Date.now() });
+        save(); renderComments();
+        return;
+      }
+      try {
+        await window.sb.addComment(state.selfId, t);
+        await loadMyComments();
+      } catch (e) {
+        logSoft(e);
+        state.comments.push({ author: state.profile.nick || 'Гость', text: t, ts: Date.now() });
+        save(); renderComments();
+      }
+    }
+
+    async function openFriendProfile(uid) {
+      try {
         currentFriendId = uid;
-        if(!sbOk()) { friendModal.classList.add('show'); return; }
-        const p = await window.sb.getProfileById(uid);
-        fNick.textContent = p?.display_name || 'Игрок';
-        const online = !!(p?.last_seen && (Date.now()-new Date(p.last_seen).getTime()<120000));
-        fStatus.textContent = online ? 'в сети' : 'оффлайн';
-        fDot.style.background = online ? 'var(--ok)' : 'var(--offline)';
-        if(p?.avatar_url){
-          fAva.src = `${p.avatar_url}${p.avatar_url.includes('?')?'&':'?'}v=${Date.now()}`;
-          fAva.style.display='block';
-        }else{
-          fAva.removeAttribute('src'); fAva.style.display='none';
+        if (sbOk() && window.sb.getProfileById) {
+          const p = await window.sb.getProfileById(uid);
+          if (fNick) fNick.textContent = p?.display_name || 'Игрок';
+          const online = !!(p?.last_seen && (Date.now() - new Date(p.last_seen).getTime() < 120000));
+          if (fStatus) fStatus.textContent = online ? 'в сети' : 'оффлайн';
+          if (fDot) fDot.style.background = online ? 'var(--ok)' : 'var(--offline)';
+          if (fAva) {
+            if (p?.avatar_url) {
+              fAva.src = p.avatar_url;
+              fAva.style.display = 'block';
+            } else {
+              fAva.removeAttribute('src');
+              fAva.style.display = 'none';
+            }
+          }
+          await loadFriendComments(uid);
+        } else {
+          renderFriendCommentsList([]);
         }
-        await loadFriendComments(uid);
-        friendModal.classList.add('show');
-      }catch(e){ console.error(e); }
+        friendModal?.classList.add('show');
+      } catch (e) {
+        logSoft(e);
+      }
     }
 
-    /* ===== init ===== */
-    applyGame(); applyProfile(); applyExe(); renderComments(); renderSaves();
-    loadFriends();
-    setInterval(loadFriends, 15000);
+    async function chooseExe() {
+      alert('Выбор EXE убран. Новелла и карточная игра будут запускаться через лаунчерные загрузчики.');
+    }
 
-    // автологин, если сессия жива
-(async ()=>{
-  try{
-    if(sbOk() && window.sb.getUserId){
-      const myId = await window.sb.getUserId();
-      if(myId){
+    async function installCurrentGame() {
+      try {
+        const api = launcher();
+
+        if (state.game === 'cards') {
+          if (!api?.installCardGame) { alert('Лаунчер API карточной игры недоступен'); return; }
+          const status = await refreshCardGameStatus({ checkLatest: true });
+          const force = Boolean(status?.installed);
+          setBusy(btnInstallGame, true, status?.updateAvailable ? 'обновляем…' : 'скачиваем…');
+          setGameProgress(0, status?.updateAvailable ? 'Обновление карточной игры' : 'Скачивание карточной игры');
+          setInstallStatus(status?.updateAvailable ? 'обновляем карточную игру…' : 'скачиваем карточную игру из GitHub Release…');
+          const res = await api.installCardGame({ force });
+          if (!res?.ok) throw new Error(res?.error || 'Не удалось скачать карточную игру');
+          cardGameStatus = { ...(cardGameStatus || {}), installed: true, version: res.version || cardGameStatus.version, updateAvailable: false };
+          setGameProgress(100, 'Готово');
+          hideGameProgressSoon();
+          setInstallStatus(`карточная игра готова${res.version ? ` • ${res.version}` : ''}`);
+          updateCardGameButtons();
+          return;
+        }
+
+        if (state.game === 'novel' && sbOk() && window.sb.getNovelSignedUrl && api?.downloadNovel) {
+          const uid = await window.sb.getUserId?.();
+          if (!uid) { alert('Войдите, чтобы скачать новеллу'); return; }
+          setBusy(btnInstallGame, true, 'скачиваем…');
+          setInstallStatus('скачиваем новеллу из Supabase builds…');
+          const relPath = `novel/${state.novel.version}/FraktumNovel-win.zip`;
+          const signedUrl = await window.sb.getNovelSignedUrl(relPath);
+          const res = await api.downloadNovel({ signedUrl, version: state.novel.version });
+          if (!res?.ok) throw new Error(res?.error || 'download failed');
+          state.novel.zipPath = res.zip || null;
+          state.novel.installedDir = res.dir || null;
+          save();
+          setInstallStatus('новелла скачана. Запуск новеллы будет настроен отдельным билдом.');
+          return;
+        }
+
+        alert('Для этой игры загрузка пока не настроена.');
+      } catch (e) {
+        logSoft(e);
+        alert(friendlyError(e, 'Не удалось скачать игру.'));
+      } finally {
+        setBusy(btnInstallGame, false);
+        applyGame();
+      }
+    }
+
+    async function playCurrentGame() {
+      try {
+        const api = launcher();
+
+        if (state.game === 'cards') {
+          if (!api?.runGame) { alert('Лаунчер API карточной игры недоступен'); return; }
+          const status = await refreshCardGameStatus({ checkLatest: true });
+
+          if (!status?.installed || status?.updateAvailable) {
+            setBusy(btnPlay, true, status?.updateAvailable ? 'обновляем…' : 'скачиваем…');
+            setGameProgress(0, status?.updateAvailable ? 'Обновление карточной игры' : 'Скачивание карточной игры');
+            const install = await api.installCardGame?.({ force: Boolean(status?.installed) });
+            if (!install?.ok) throw new Error(install?.error || 'Не удалось скачать/обновить карточную игру');
+            cardGameStatus = { ...(cardGameStatus || {}), installed: true, version: install.version || status?.latestVersion || status?.version, updateAvailable: false };
+            setGameProgress(100, 'Готово');
+            hideGameProgressSoon();
+            updateCardGameButtons();
+            return;
+          }
+
+          setBusy(btnPlay, true, 'запуск…');
+          setInstallStatus('запускаем карточную игру…');
+          const res = await api.runGame({ gameId: 'cards' });
+          if (!res?.ok) throw new Error(res?.error || 'Не удалось открыть карточную игру');
+          return;
+        }
+
+        if (state.game === 'novel') {
+          if (api?.runGame && state.exeName) {
+            await api.runGame({ gameId: 'novel' });
+            return;
+          }
+          alert('Запуск новеллы через EXE временно убран из интерфейса. Сначала настраиваем карточную игру.');
+          return;
+        }
+
+        alert('Неизвестная игра');
+      } catch (e) {
+        logSoft(e);
+        alert(friendlyError(e, 'Не удалось запустить игру.'));
+      } finally {
+        setBusy(btnPlay, false);
+        applyGame();
+      }
+    }
+
+    function showTab(id) {
+      tabProfile?.classList.toggle('hidden', id !== 'profile');
+      tabLogin?.classList.toggle('hidden', id !== 'login');
+      tabInbox?.classList.toggle('hidden', id !== 'inbox');
+      tabProfileBtn?.classList.toggle('active', id === 'profile');
+      tabLoginBtn?.classList.toggle('active', id === 'login');
+      tabInboxBtn?.classList.toggle('active', id === 'inbox');
+      if (id === 'inbox') refreshInbox();
+    }
+
+    async function refreshInbox() {
+      if (!inboxIn || !inboxOut) return;
+      if (!sbOk()) { inboxIn.textContent = 'нет входящих (офлайн)'; inboxOut.textContent = 'нет исходящих (офлайн)'; return; }
+      try {
+        const [incoming, outgoing] = await Promise.all([
+          window.sb.listIncomingRequests?.() || [],
+          window.sb.listOutgoingRequests?.() || []
+        ]);
+
+        inboxIn.innerHTML = !incoming?.length ? '<span class="muted">нет входящих заявок</span>' : incoming.map(req => {
+          const name = req.from?.display_name || 'Игрок';
+          const ava = req.from?.avatar_url || '';
+          return `
+            <div class="friend-item">
+              <div class="friend-left">
+                <div class="friend-ava">${ava ? `<img src="${ava}" alt="" style="width:100%;height:100%;object-fit:cover">` : ''}</div>
+                <span>${escapeHTML(name)}</span>
+              </div>
+              <div class="row" style="gap:6px">
+                <button class="btn primary" data-acc="${req.id}" style="padding:6px 10px">принять</button>
+                <button class="btn" data-rej="${req.id}" style="padding:6px 10px">отклонить</button>
+              </div>
+            </div>`;
+        }).join('');
+
+        inboxOut.innerHTML = !outgoing?.length ? '<span class="muted">нет исходящих заявок</span>' : outgoing.map(req => {
+          const name = req.to?.display_name || 'Игрок';
+          const ava = req.to?.avatar_url || '';
+          return `
+            <div class="friend-item">
+              <div class="friend-left">
+                <div class="friend-ava">${ava ? `<img src="${ava}" alt="" style="width:100%;height:100%;object-fit:cover">` : ''}</div>
+                <span>${escapeHTML(name)}</span>
+              </div>
+              <span class="muted">ожидает</span>
+            </div>`;
+        }).join('');
+      } catch (e) {
+        logSoft(e);
+        inboxIn.textContent = friendlyError(e, 'ошибка загрузки');
+        inboxOut.textContent = friendlyError(e, 'ошибка загрузки');
+      }
+    }
+
+    async function tryRestoreSession() {
+      try {
+        if (!sbOk() || !window.sb.getUserId) return;
+        const myId = await window.sb.getUserId();
+        if (!myId) {
+          state.auth = false;
+          state.selfId = null;
+          resetLocalProfileToGuest();
+          save();
+          return;
+        }
+
         state.selfId = myId;
         state.auth = true;
-        // подтащим профиль
-        try{
-          const p = await window.sb.getProfile();
-          if (p){
+        try {
+          const p = await window.sb.getProfile?.();
+          if (p) {
             state.profile.nick = p.display_name || '';
             state.profile.email = p.email || state.profile.email || '';
             state.profile.avatar = p.avatar_url || '';
             save(); applyProfile();
           }
-        }catch(_){}
+        } catch (_) {}
         await loadMyComments();
         await loadFriends();
-      } else {
-        // нет сессии — гость
-        state.auth = false;
-        state.selfId = null;
-        resetLocalProfileToGuest();
-        commentsList.textContent = 'Комментов пока нет.';
-        save();
+      } catch (e) {
+        console.debug(e);
       }
     }
-  }catch(e){ console.debug(e); }
-})();
 
+    async function tryLoadExeFromMain() {
+      // Deprecated: EXE selector is no longer shown in the launcher UI.
+    }
+
+    /* ===== init ===== */
+    applyGame();
+    wireCardGameEvents();
+    applyProfile();
+    renderComments();
+    renderSaves();
+    renderFriends();
+    tryRestoreSession();
+    setInterval(() => { if (state.auth) loadFriends(); }, 60000);
+    refreshOtpButton();
 
     /* ===== events ===== */
-    on(btnNovel,'click',()=>{ state.game='novel'; save(); applyGame(); });
-    on(btnCards,'click',()=>{ state.game='cards'; save(); applyGame(); });
+    on(btnNovel, 'click', () => { state.game = 'novel'; save(); applyGame(); });
+    on(btnCards, 'click', () => { state.game = 'cards'; save(); applyGame(); });
+    on(btnPlay, 'click', playCurrentGame);
+    on(btnInstallGame, 'click', installCurrentGame);
 
-    on(btnPlay,'click',()=>{ if(!state.exeName){ alert('Сначала выбери EXE'); return; } alert('Запуск: '+state.exeName); });
+    on(userChip, 'click', () => modal?.classList.add('show'));
+    on($('.backdrop', modal), 'click', () => modal?.classList.remove('show'));
+    on(accClose, 'click', () => modal?.classList.remove('show'));
 
-    on(btnChooseExe,'click', async ()=>{
-      try{
-        if(window.showOpenFilePicker){
-          const [h] = await window.showOpenFilePicker({ multiple:false, types:[{description:'Executable', accept:{'application/x-msdownload':['.exe']}}] });
-          const f = await h.getFile(); state.exeName=f.name; save(); applyExe();
-        }else{
-          const i=document.createElement('input'); i.type='file'; i.accept='.exe'; i.style.display='none'; document.body.appendChild(i);
-          i.click(); await new Promise(r=>i.onchange=r); const f=i.files?.[0]; if(f){ state.exeName=f.name; save(); applyExe(); } i.remove();
-        }
-      }catch(_){}
-    });
+    on(tabProfileBtn, 'click', () => showTab('profile'));
+    on(tabLoginBtn, 'click', () => showTab('login'));
+    on(tabInboxBtn, 'click', () => showTab('inbox'));
 
-    // модалка аккаунта
-    on(userChip,'click',()=>modal.classList.add('show'));
-    on($('.backdrop',modal),'click',()=>modal.classList.remove('show'));
-    on(accClose,'click',()=>modal.classList.remove('show'));
-
-    // вкладки
-    function showTab(id){
-      tabProfile.classList.toggle('hidden', id!=='profile');
-      tabLogin  .classList.toggle('hidden', id!=='login');
-      tabInbox  .classList.toggle('hidden', id!=='inbox');
-      tabProfileBtn.classList.toggle('active', id==='profile');
-      tabLoginBtn  .classList.toggle('active', id==='login');
-      tabInboxBtn  .classList.toggle('active', id==='inbox');
-      if(id==='inbox') refreshInbox();
-    }
-    on(tabProfileBtn,'click',()=>showTab('profile'));
-    on(tabLoginBtn,'click',  ()=>showTab('login'));
-    on(tabInboxBtn,'click',  ()=>showTab('inbox'));
-
-    // редактор
-    on(btnEdit,'click',()=>editor.classList.toggle('hidden'));
-    on(avatarFile,'change', async (e)=>{
-      const f=e.target.files?.[0]; if(!f) return;
-      try{
-        if(sbOk() && window.sb.uploadAvatar){
+    on(btnEdit, 'click', () => editor?.classList.toggle('hidden'));
+    on(avatarFile, 'change', async (e) => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      try {
+        if (sbOk() && window.sb.uploadAvatar) {
           const res = await window.sb.uploadAvatar(f);
           state.profile.avatar = res.url;
-        }else{
-          const b64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(f); });
-          state.profile.avatar = b64;
+        } else {
+          state.profile.avatar = await new Promise((resolve, reject) => {
+            const r = new FileReader();
+            r.onload = () => resolve(r.result);
+            r.onerror = reject;
+            r.readAsDataURL(f);
+          });
         }
         save(); applyProfile();
-        if(sbOk() && window.sb.updateProfile){
-          try{ await window.sb.updateProfile({ avatar_url: state.profile.avatar }); }catch(_){}
+        if (sbOk() && window.sb.updateProfile) {
+          try { await window.sb.updateProfile({ avatar_url: state.profile.avatar }); } catch (_) {}
         }
-      }catch(err){ console.error(err); alert('Не удалось загрузить аватар'); }
-    });
-    on(btnSaveNick,'click',async ()=>{
-      state.profile.nick = (nick.value||'').trim(); save(); applyProfile();
-      if(sbOk() && window.sb.updateProfile){
-        try{ await window.sb.updateProfile({ display_name: state.profile.nick || null }); }catch(_){}
+      } catch (e) {
+        logSoft(e);
+        alert(friendlyError(e, 'Не удалось загрузить аватар'));
       }
     });
-    on(btnSignOut,'click', async ()=>{
-  try{ if(sbOk() && window.sb.signOut) await window.sb.signOut(); }catch(_){}
-  // Полный локальный сброс
-  state.auth = false;
-  state.selfId = null;
-  state.comments = [];          // чистим локальные комменты, чтобы не путали
-  resetLocalProfileToGuest();   // чистим ник/аву визуально
-  save();
-  // UI
-  commentsList.textContent = 'Комментов пока нет.';
-  alert('Вы вышли');
-});
 
+    on(btnSaveNick, 'click', async () => {
+      state.profile.nick = (nick?.value || '').trim();
+      save(); applyProfile();
+      if (sbOk() && window.sb.updateProfile) {
+        try { await window.sb.updateProfile({ display_name: state.profile.nick || null }); } catch (_) {}
+      }
+    });
 
-    // друзья: отправка заявки
-    on(btnFind,'click', async ()=>{
-      const q = (friendSearch.value||'').trim(); if(!q) return;
-      if(!sbOk()){ alert('supabase недоступен'); return; }
-      try{
+    on(btnSignOut, 'click', async () => {
+      try { if (sbOk() && window.sb.signOut) await window.sb.signOut(); } catch (_) {}
+      state.auth = false;
+      state.selfId = null;
+      state.comments = [];
+      resetLocalProfileToGuest();
+      save();
+      alert('Вы вышли');
+    });
+
+    on(btnFind, 'click', async () => {
+      const q = (friendSearch?.value || '').trim();
+      if (!q) return;
+      if (!sbOk()) { alert('Supabase недоступен'); return; }
+      try {
         const res = await window.sb.searchUsersByNick(q);
-        if(!res || !res.length){ alert('Пользователь не найден'); return; }
-        const target = res[0].id;
-        const r = await window.sb.sendFriendRequest(target);
-        if(r?.ok) { alert(r.duplicate ? 'Заявка уже существует' : 'Заявка отправлена'); friendSearch.value=''; showTab('inbox'); }
-        else alert('Не удалось отправить');
-      }catch(e){ console.error(e); alert('Ошибка отправки'); }
+        if (!res?.length) { alert('Пользователь не найден'); return; }
+        const r = await window.sb.sendFriendRequest(res[0].id);
+        if (r?.ok) {
+          alert(r.duplicate ? 'Заявка уже существует' : 'Заявка отправлена');
+          friendSearch.value = '';
+          showTab('inbox');
+        } else alert('Не удалось отправить');
+      } catch (e) {
+        logSoft(e);
+        alert('Ошибка отправки');
+      }
     });
 
-    // комменты (локально в своём профиле)
-     on(btnComment,'click', async ()=>{
-  const t = commentText.value.trim(); if(!t) return;
-  commentText.value = '';
-  await addCommentToMyProfile(t);
-  });
-
-    // логин/код
-    rememberMe.checked = !!state.remember;
-    on(btnSendCode,'click', async ()=>{
-      const email=(loginEmail?.value||'').trim(); if(!email){ alert('Введи email'); return; }
-      if(!sbOk() || !window.sb.sendMagicLink){ alert('Supabase-бридж недоступен'); return; }
-      try{ await window.sb.sendMagicLink(email); alert('Письмо отправлено. Проверь почту.'); }catch(e){ console.error(e); alert('Не удалось отправить'); }
+    on(btnComment, 'click', async () => {
+      const t = (commentText?.value || '').trim();
+      if (!t) return;
+      commentText.value = '';
+      await addCommentToMyProfile(t);
     });
-    on(btnLogin,'click', async ()=>{
-      const email=(loginEmail?.value||'').trim(), code=(loginCode?.value||'').trim();
-      if(!email || !code){ alert('Введи email и код'); return; }
-      if(!sbOk() || !window.sb.verifyOtp){ alert('Supabase-бридж недоступен'); return; }
-      try{
+
+    if (rememberMe) rememberMe.checked = !!state.remember;
+
+    on(btnSendCode, 'click', async () => {
+      const email = (loginEmail?.value || '').trim();
+      if (!email) { alert('Введи email'); return; }
+      if (!sbOk() || !window.sb.sendMagicLink) { alert('Supabase-бридж недоступен'); return; }
+
+      const left = secondsLeft(state.otpNextAllowedAt);
+      if (left > 0) {
+        alert(`Подожди ${left} сек. перед повторной отправкой кода.`);
+        return;
+      }
+
+      lockOtpFor(15);
+      try {
+        await window.sb.sendMagicLink(email);
+        alert('Код отправлен. Проверь почту.');
+      } catch (e) {
+        logSoft(e);
+        const msg = friendlyError(e, 'Не удалось отправить код');
+        const wait = String(e?.message || '').match(/after\s+(\d+)\s+seconds/i)?.[1];
+        if (wait) lockOtpFor(Number(wait));
+        else if (isNetworkError(e)) lockOtpFor(5);
+        alert(msg);
+      } finally {
+        refreshOtpButton();
+      }
+    });
+
+    on(btnLogin, 'click', async () => {
+      const email = (loginEmail?.value || '').trim();
+      const code = (loginCode?.value || '').trim();
+      if (!email || !code) { alert('Введи email и код'); return; }
+      if (!sbOk() || !window.sb.verifyOtp) { alert('Supabase-бридж недоступен'); return; }
+      try {
         await window.sb.verifyOtp(email, code);
-        state.auth = true; state.remember = !!rememberMe.checked; save();
-        await loadFriends();
-        showTab('profile'); modal.classList.remove('show');
-      }catch(e){ console.error(e); alert('Код не подошёл'); }
-      const myId = (await window.sb.getUserId?.()) || null;
-state.selfId = myId;
-state.auth = true;
-state.remember = !!rememberMe.checked;
-save();
+      } catch (e) {
+        logSoft(e);
+        alert(friendlyError(e, 'Код не подошёл'));
+        return;
+      }
 
-// подтянем серверный профиль (если есть)
-try{
-  const p = await window.sb.getProfile();
-  if (p){
-    state.profile.nick = p.display_name || '';
-    state.profile.email = p.email || state.profile.email || '';
-    state.profile.avatar = p.avatar_url || '';
-    save(); applyProfile();
-  }
-}catch(_){}
+      state.selfId = await window.sb.getUserId?.() || null;
+      state.auth = !!state.selfId;
+      state.remember = !!rememberMe?.checked;
+      save();
 
-// загрузим комменты к себе
-await loadMyComments();
-await loadFriends();
+      try {
+        const p = await window.sb.getProfile?.();
+        if (p) {
+          state.profile.nick = p.display_name || '';
+          state.profile.email = p.email || email;
+          state.profile.avatar = p.avatar_url || '';
+          save(); applyProfile();
+        }
+      } catch (_) {}
+
+      await loadMyComments();
+      await loadFriends();
+      showTab('profile');
+      modal?.classList.remove('show');
     });
 
-    // сейвы (локально)
-    on(btnUpload,'click',async ()=>{
-      const f=saveFile.files?.[0]; if(!f){ alert('Выбери .zip'); return; }
+    on(btnUpload, 'click', async () => {
+      const f = saveFile?.files?.[0];
+      if (!f) { alert('Выбери .zip'); return; }
       const reader = new FileReader();
-      reader.onload=()=>{ state.saves[slot.value] = { name:f.name, size:f.size, dataURL:reader.result }; save(); renderSaves(); };
+      reader.onload = () => {
+        state.saves[slot.value] = { name: f.name, size: f.size, dataURL: reader.result };
+        save(); renderSaves();
+      };
       reader.readAsDataURL(f);
     });
-    on(btnDownload,'click',()=>{
-      const s = state.saves[slot.value]; if(!s){ alert('Пусто'); return; }
-      const a=document.createElement('a'); a.href=s.dataURL; a.download=s.name; a.click();
+
+    on(btnDownload, 'click', () => {
+      const s = state.saves[slot.value];
+      if (!s) { alert('Пусто'); return; }
+      const a = document.createElement('a');
+      a.href = s.dataURL;
+      a.download = s.name;
+      a.click();
     });
 
-    /* ===== INBOX ===== */
-    async function refreshInbox(){
-      if(!sbOk()){ inboxIn.textContent='нет входящих (офлайн)'; inboxOut.textContent='нет исходящих (офлайн)'; return; }
-      try{
-        const [incoming, outgoing] = await Promise.all([ window.sb.listIncomingRequests(), window.sb.listOutgoingRequests() ]);
-        if(!incoming?.length){ inboxIn.innerHTML='<span class="muted">нет входящих заявок</span>'; }
-        else{
-          inboxIn.innerHTML = incoming.map(req=>{
-            const name = req.from?.display_name || 'Игрок';
-            const ava = req.from?.avatar_url || '';
-            return `
-              <div class="friend-item">
-                <div class="friend-left">
-                  <div class="friend-ava">${ava?`<img src="${ava}" style="width:100%;height:100%;object-fit:cover">`:''}</div>
-                  <span>${escapeHTML(name)}</span>
-                </div>
-                <div class="row" style="gap:6px">
-                  <button class="btn primary" data-acc="${req.id}" style="padding:6px 10px">принять</button>
-                  <button class="btn" data-rej="${req.id}" style="padding:6px 10px">отклонить</button>
-                </div>
-              </div>`;
-          }).join('');
-        }
-        if(!outgoing?.length){ inboxOut.innerHTML='<span class="muted">нет исходящих заявок</span>'; }
-        else{
-          inboxOut.innerHTML = outgoing.map(req=>{
-            const name = req.to?.display_name || 'Игрок';
-            const ava = req.to?.avatar_url || '';
-            return `
-              <div class="friend-item">
-                <div class="friend-left">
-                  <div class="friend-ava">${ava?`<img src="${ava}" style="width:100%;height:100%;object-fit:cover">`:''}</div>
-                  <span>${escapeHTML(name)}</span>
-                </div>
-                <span class="muted">ожидает</span>
-              </div>`;
-          }).join('');
-        }
-      }catch(e){
-        console.error(e);
-        inboxIn.textContent='ошибка загрузки';
-        inboxOut.textContent='ошибка загрузки';
-      }
-    }
-
-    on(inboxIn,'click', async (e)=>{
-      const acc = e.target.closest?.('[data-acc]'); const rej = e.target.closest?.('[data-rej]');
-      if(!acc && !rej) return;
-      if(!sbOk()) return;
-      try{
-        if(acc) await window.sb.respondFriendRequest(acc.dataset.acc, true);
-        if(rej) await window.sb.respondFriendRequest(rej.dataset.rej, false);
+    on(inboxIn, 'click', async (e) => {
+      const acc = e.target.closest?.('[data-acc]');
+      const rej = e.target.closest?.('[data-rej]');
+      if (!acc && !rej) return;
+      if (!sbOk()) return;
+      try {
+        if (acc) await window.sb.respondFriendRequest(acc.dataset.acc, true);
+        if (rej) await window.sb.respondFriendRequest(rej.dataset.rej, false);
         alert('Готово');
         await Promise.all([refreshInbox(), loadFriends()]);
-      }catch(err){ console.error(err); alert('Ошибка обработки заявки'); }
+      } catch (err) {
+        console.error(err);
+        alert('Ошибка обработки заявки');
+      }
     });
 
-    /* ===== контекстное меню и модалка друга ===== */
-    on(document,'click',()=>hideFriendMenu());
-    on(openFriendProfileBtn,'click',()=>{ if(state.ctxFriendId){ openFriendProfile(state.ctxFriendId); hideFriendMenu(); } });
-    on($('.backdrop',friendModal),'click',()=>friendModal.classList.remove('show'));
-    on(closeFriend,'click',()=>friendModal.classList.remove('show'));
-    on(friendCommentSend,'click', sendFriendComment);
+    on(document, 'click', () => hideFriendMenu());
+    on(friendMenu, 'click', (e) => e.stopPropagation());
+    on(openFriendProfileBtn, 'click', () => {
+      if (state.ctxFriendId) openFriendProfile(state.ctxFriendId);
+      hideFriendMenu();
+    });
+    on($('.backdrop', friendModal), 'click', () => friendModal?.classList.remove('show'));
+    on(closeFriend, 'click', () => friendModal?.classList.remove('show'));
+    on(friendCommentSend, 'click', sendFriendComment);
 
-    // ESC закрывает модалки/меню
-    on(document,'keydown',(e)=>{
-      if(e.key === 'Escape'){
-        friendModal.classList.remove('show');
-        modal.classList.remove('show');
+    on(document, 'keydown', (e) => {
+      if (e.key === 'Escape') {
+        friendModal?.classList.remove('show');
+        modal?.classList.remove('show');
         hideFriendMenu();
       }
     });

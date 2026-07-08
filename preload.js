@@ -1,51 +1,132 @@
-// preload.js
-// Безопасный мост Supabase → рендер. Доступно как window.sb.{...}
-const { contextBridge } = require('electron');
+// preload.js — Fraktum Launcher safe bridge
+// Exposes:
+//   window.launcher / window.api — Electron IPC helpers
+//   window.sb                  — Supabase auth/social/playtime helpers
 
-// === ДОБАВЛЕНО: разрешаем полностью тихий офлайн-режим, когда SDK не установлена ===
-const SUPABASE_OPTIONAL = true;
+const { contextBridge, ipcRenderer } = require('electron');
 
-// --- ВАЖНО: не падаем, если supabase-js недоступен или это ESM --- //
-let createClientMaybe = null;     // сюда положим createClient
-let supabase = null;              // глобальный клиент после инициализации
+let createClientMaybe = null;
+let supabase = null;
 
-// Пытаемся синхронно через require (если модуль есть и CommonJS-совместим)
+const SUPABASE_URL = 'https://bvnbqjhgnlvthkluddfj.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ2bmJxamhnbmx2dGhrbHVkZGZqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgxMjcwNjYsImV4cCI6MjA3MzcwMzA2Nn0.TB-qIFbtL_d5Gno99JdttsS2LdyC6z_9n0WN_Uj9QLY';
+
 try {
   ({ createClient: createClientMaybe } = require('@supabase/supabase-js'));
-} catch (_) {
-  // ок, попробуем позже через динамический import()
+} catch (_e) {
+  // Loaded lazily in ensureClient().
 }
 
-/** Гарантирует, что supabase создан.
- * Если модуль не установлен — В ТИШИНЕ выходим (офлайн), прелоад не падает.
- */
+function normalizeEmail(email) {
+  const value = String(email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) throw new Error('Некорректный email');
+  return value;
+}
+
+function cleanText(value, max = 500) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+function cleanSearch(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[%,()]/g, '')
+    .slice(0, 40);
+}
+
+function cleanUuid(value, field = 'id') {
+  const id = String(value || '').trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+    throw new Error(`Некорректный ${field}`);
+  }
+  return id;
+}
+
+function extractAuthCode(rawCode) {
+  const value = String(rawCode || '').trim();
+  if (!value) throw new Error('Нет кода');
+
+  try {
+    const url = new URL(value);
+    return url.searchParams.get('code') || url.hash.match(/(?:^|[&#])access_token=([^&]+)/)?.[1] || value;
+  } catch (_e) {
+    return value;
+  }
+}
+
+
+function normalizeSupabaseError(error) {
+  const raw = String(error?.message || error || '');
+  const code = String(error?.code || error?.status || '');
+  const networkLike = /failed to fetch|fetch failed|networkerror|network error|load failed|err_connection_reset|err_http2_ping_failed|http2_ping_failed|ping_failed|err_internet_disconnected|err_name_not_resolved|econnreset|etimedout|timeout|aborterror|aborted a request|user aborted/i.test(raw + ' ' + code);
+
+  if (networkLike) {
+    const e = new Error('Нет соединения с Supabase. Это не ошибка SQL/RLS: соединение сбрасывается до ответа сервера. Проверь интернет, VPN/прокси, антивирус/фаервол и доступ к supabase.co.');
+    e.code = 'SUPABASE_NETWORK_ERROR';
+    e.cause = error;
+    return e;
+  }
+
+  return error instanceof Error ? error : new Error(raw || 'Неизвестная ошибка Supabase');
+}
+
+function safeApi(fn) {
+  return async (...args) => {
+    try {
+      return await fn(...args);
+    } catch (error) {
+      throw normalizeSupabaseError(error);
+    }
+  };
+}
+
+const SUPABASE_REQUEST_TIMEOUT_MS = 45000;
+
+async function timeoutFetch(url, options = {}) {
+  const controller = new AbortController();
+  let timedOut = false;
+
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    try { controller.abort(); } catch (_) {}
+  }, SUPABASE_REQUEST_TIMEOUT_MS);
+
+  const externalSignal = options.signal;
+  if (externalSignal && typeof externalSignal.addEventListener === 'function') {
+    externalSignal.addEventListener('abort', () => {
+      try { controller.abort(); } catch (_) {}
+    }, { once: true });
+  }
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) {
+      const e = new Error('Supabase не ответил за 45 секунд. Запрос остановлен, чтобы лаунчер не завис. Проверь VPN/прокси, антивирус/фаервол и стабильность сети.');
+      e.code = 'SUPABASE_TIMEOUT';
+      e.cause = error;
+      throw e;
+    }
+    throw normalizeSupabaseError(error);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function ensureClient() {
   if (supabase) return supabase;
 
-  // если не удалось require — пробуем ESM import
   if (!createClientMaybe) {
     try {
       const mod = await import('@supabase/supabase-js');
       createClientMaybe = mod.createClient;
     } catch (e) {
-      if (SUPABASE_OPTIONAL) return null;
-      throw new Error(
-        "Supabase SDK недоступен. Установи @supabase/supabase-js в dependencies сборки.\n" +
-        String(e?.message || e)
-      );
+      throw new Error(`Supabase SDK не загружен: ${String(e?.message || e)}`);
     }
   }
 
-  // ======================== CONFIG ========================
-  const SUPABASE_URL = 'https://bvnbqjhgnlvthkluddfj.supabase.co';
-  const SUPABASE_ANON_KEY =
-    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ2bmJxamhnbmx2dGhrbHVkZGZqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgxMjcwNjYsImV4cCI6MjA3MzcwMzA2Nn0.TB-qIFbtL_d5Gno99JdttsS2LdyC6z_9n0WN_Uj9QLY';
-
-  // ==================== Supabase client ===================
   let storage;
-  try { storage = globalThis.localStorage; } catch { storage = undefined; }
-
-  if (!createClientMaybe) return null; // на всякий случай — тоже тихо
+  try { storage = globalThis.localStorage; } catch (_e) { storage = undefined; }
 
   supabase = createClientMaybe(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
@@ -54,460 +135,551 @@ async function ensureClient() {
       detectSessionInUrl: false,
       storage,
     },
+    global: {
+      fetch: timeoutFetch,
+    },
   });
 
   return supabase;
 }
 
-/* =================== AUTH / PROFILE ===================== */
 async function getSession() {
-  await ensureClient();
-  if (!supabase) return null; // офлайн-заглушка
-  const { data, error } = await supabase.auth.getSession();
+  const sb = await ensureClient();
+  const { data, error } = await sb.auth.getSession();
   if (error) throw error;
-  return data.session ?? null;
+  return data.session || null;
 }
+
+async function getSessionUser() {
+  const session = await getSession();
+  return session?.user || null;
+}
+
 async function getUser() {
-  await ensureClient();
-  if (!supabase) return null; // офлайн
-  const { data, error } = await supabase.auth.getUser();
+  const sb = await ensureClient();
+  const { data, error } = await sb.auth.getUser();
   if (error) throw error;
-  return data.user ?? null;
+  return data.user || null;
 }
-// ADD: быстрый хелпер — только id
+
 async function getUserId() {
-  const u = await getUser();
-  return u?.id || null;
+  const user = await getSessionUser();
+  return user?.id || null;
 }
-// ADD: подписка на смену сессии (для нескольких окон/акков)
+
 function onAuthStateChange(cb) {
   const safe = typeof cb === 'function' ? cb : () => {};
-  (async () => {
-    await ensureClient();
-    if (!supabase) return () => {};
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      try { safe({ event: _event, user: session?.user || null }); } catch {}
-    });
-    return sub?.subscription?.unsubscribe ?? (() => {});
-  })();
-  // возвращаем no-op, т.к. колбэк уходит «внутрь»
-  return () => {};
+  let unsubscribe = () => {};
+
+  ensureClient()
+    .then((sb) => {
+      const { data } = sb.auth.onAuthStateChange((event, session) => {
+        safe({ event, user: session?.user || null, session: session || null });
+      });
+      unsubscribe = () => data?.subscription?.unsubscribe?.();
+    })
+    .catch((error) => safe({ event: 'ERROR', error: String(error?.message || error) }));
+
+  return () => unsubscribe();
 }
 
 async function sendMagicLink(email) {
-  await ensureClient();
-  if (!supabase) return false; // офлайн: просто false, без ошибок
-  const { error } = await supabase.auth.signInWithOtp({
-    email,
+  const sb = await ensureClient();
+  const cleanEmail = normalizeEmail(email);
+  const { error } = await sb.auth.signInWithOtp({
+    email: cleanEmail,
     options: { shouldCreateUser: true },
   });
   if (error) throw error;
   return true;
 }
-async function verifyOtp(email, rawCode) {
-  await ensureClient();
-  if (!supabase) return false; // офлайн
-  const code = String(rawCode || '').trim();
-  if (!code) throw new Error('Нет кода');
 
-  if (code.length > 8 && typeof supabase.auth.exchangeCodeForSession === 'function') {
-    const { error } = await supabase.auth.exchangeCodeForSession({ authCode: code });
+async function verifyOtp(email, rawCode) {
+  const sb = await ensureClient();
+  const code = extractAuthCode(rawCode);
+
+  // 6-digit email OTP from Supabase template.
+  if (/^\d{6}$/.test(code)) {
+    const { error } = await sb.auth.verifyOtp({
+      email: normalizeEmail(email),
+      token: code,
+      type: 'email',
+    });
     if (error) throw error;
+    await ensureProfile();
     return true;
   }
-  const { error } = await supabase.auth.verifyOtp({ email, token: code, type: 'email' });
-  if (error) throw error;
-  return true;
+
+  // PKCE/magic-link code.
+  if (typeof sb.auth.exchangeCodeForSession === 'function') {
+    const { error } = await sb.auth.exchangeCodeForSession(code);
+    if (error) throw error;
+    await ensureProfile();
+    return true;
+  }
+
+  throw new Error('Неверный формат кода');
 }
 
 async function ensureProfile() {
-  await ensureClient();
-  if (!supabase) return null; // офлайн
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) return null;
-  const { data, error } = await supabase.from('profiles').select('id').eq('id', user.id).limit(1);
-  if (error) throw error;
-  if (data && data[0]) return true;
-  await supabase.from('profiles').insert({ id: user.id, email: user.email }).catch(() => {});
-  return true;
+
+  // Do not block login on profile insert/update.
+  // Correct production flow: auth.users trigger creates public.profiles.
+  // Client upsert can fail with 403 when RLS is strict.
+  try {
+    const { data, error } = await sb
+      .from('profiles')
+      .select('id')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (data?.id) return true;
+
+    const fallbackName = user.email ? user.email.split('@')[0] : `Player-${String(user.id).slice(0, 6)}`;
+    const insert = await sb.from('profiles').insert({
+      id: user.id,
+      email: user.email || null,
+      display_name: fallbackName.slice(0, 32),
+      updated_at: new Date().toISOString(),
+    });
+
+    if (insert.error) {
+      console.warn('[profiles] insert skipped:', insert.error.message || insert.error);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.warn('[profiles] ensure skipped:', error?.message || error);
+    return false;
+  }
 }
 
 async function getProfile() {
-  await ensureClient();
-  if (!supabase) return { display_name: null, avatar_url: null, email: null }; // офлайн
-  await ensureProfile();
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) return null;
 
-  const { data, error } = await supabase
+  const fallback = {
+    id: user.id,
+    email: user.email || null,
+    username: null,
+    display_name: user.email ? user.email.split('@')[0] : 'User',
+    avatar_url: null,
+    last_seen: null,
+    created_at: null,
+  };
+
+  await ensureProfile();
+
+  const { data, error } = await sb
     .from('profiles')
-    .select('display_name, avatar_url, email')
+    .select('id, username, display_name, avatar_url, last_seen, created_at')
     .eq('id', user.id)
-    .limit(1);
-  if (error) throw error;
-  const row = Array.isArray(data) && data[0] ? data[0] : null;
-  return row || { display_name: null, avatar_url: null, email: user.email };
+    .maybeSingle();
+
+  if (error) {
+    console.warn('[profiles] read failed:', error.message || error);
+    return fallback;
+  }
+
+  return {
+    ...fallback,
+    ...(data || {}),
+    id: user.id,
+    email: user.email || null,
+  };
 }
 
 async function updateProfile(fields = {}) {
-  await ensureClient();
-  if (!supabase) return false; // офлайн
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) throw new Error('Требуется вход');
-  const updates = { id: user.id };
-  if ('display_name' in fields) updates.display_name = fields.display_name ?? null;
-  if ('avatar_url'   in fields) updates.avatar_url   = fields.avatar_url ?? null;
-  if ('email'        in fields) updates.email        = fields.email ?? null;
 
-  const { error } = await supabase.from('profiles').upsert(updates, { onConflict: 'id' });
+  const updates = { updated_at: new Date().toISOString() };
+
+  if ('display_name' in fields) {
+    const name = cleanText(fields.display_name, 32);
+    if (name.length < 2) throw new Error('Имя должно быть от 2 символов');
+    updates.display_name = name;
+  }
+
+  if ('username' in fields) {
+    const username = String(fields.username || '').trim().toLowerCase();
+    if (username && !/^[a-z0-9_]{3,24}$/.test(username)) {
+      throw new Error('Ник: 3–24 символа, латиница, цифры и _');
+    }
+    updates.username = username || null;
+  }
+
+  if ('avatar_url' in fields) updates.avatar_url = fields.avatar_url || null;
+
+  await ensureProfile();
+
+  const { data, error } = await sb
+    .from('profiles')
+    .update(updates)
+    .eq('id', user.id)
+    .select('id')
+    .maybeSingle();
+
   if (error) throw error;
+  if (!data?.id) {
+    throw new Error('Профиль ещё не создан в Supabase. Выполни SQL-патч profiles RLS/trigger из архива.');
+  }
   return true;
 }
 
-/* ======================= AVATAR ========================= */
 async function toUploadBody(fileLike) {
   if (!fileLike) throw new Error('Файл не выбран');
+
   if (typeof fileLike.arrayBuffer === 'function') {
     const ab = await fileLike.arrayBuffer();
+    if (ab.byteLength > 5 * 1024 * 1024) throw new Error('Аватар больше 5 МБ');
     return new Blob([ab], { type: fileLike.type || 'application/octet-stream' });
   }
-  if (fileLike instanceof ArrayBuffer) return new Blob([fileLike], { type: 'application/octet-stream' });
-  if (fileLike?.buffer && fileLike.byteLength != null) return new Blob([fileLike], { type: 'application/octet-stream' });
+
+  if (fileLike instanceof ArrayBuffer) {
+    if (fileLike.byteLength > 5 * 1024 * 1024) throw new Error('Аватар больше 5 МБ');
+    return new Blob([fileLike], { type: 'image/png' });
+  }
+
   if (typeof fileLike === 'string' && fileLike.startsWith('data:')) {
     const comma = fileLike.indexOf(',');
-    const b64 = fileLike.slice(comma + 1);
-    const bin = Buffer.from(b64, 'base64');
-    return new Blob([bin], { type: 'application/octet-stream' });
+    const meta = fileLike.slice(0, comma);
+    const mime = meta.match(/^data:([^;]+)/)?.[1] || 'image/png';
+    const bin = Buffer.from(fileLike.slice(comma + 1), 'base64');
+    if (bin.byteLength > 5 * 1024 * 1024) throw new Error('Аватар больше 5 МБ');
+    return new Blob([bin], { type: mime });
   }
+
   return fileLike;
 }
 
 async function uploadAvatar(fileLike) {
-  await ensureClient();
-  if (!supabase) return { path: null, url: '' }; // офлайн — молчим, возвращаем пусто
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) throw new Error('Требуется вход');
 
-  const body = await toUploadBody(fileLike);
-  let ext = 'png';
-  try {
-    if (fileLike?.name) ext = (fileLike.name.split('.').pop() || 'png').toLowerCase();
-    else if (fileLike?.type && fileLike.type.includes('/')) ext = fileLike.type.split('/').pop();
-  } catch {}
+  const mime = fileLike?.type || 'image/png';
+  if (!/^image\/(png|jpeg|jpg|webp)$/i.test(mime)) throw new Error('Нужна картинка PNG/JPG/WebP');
 
+  const body = await toUploadBody(fileLike);
+  const ext = mime.includes('webp') ? 'webp' : mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : 'png';
   const path = `${user.id}/avatar.${ext}`;
-  const bucket = supabase.storage.from('avatars');
+  const bucket = sb.storage.from('avatars');
+
   const { error } = await bucket.upload(path, body, {
     upsert: true,
     cacheControl: '3600',
-    contentType: fileLike?.type || 'image/png',
+    contentType: mime,
   });
   if (error) throw error;
 
   const { data } = bucket.getPublicUrl(path);
-  return { path, url: `${data.publicUrl}?v=${Date.now()}` };
+  const url = `${data.publicUrl}`;
+  await updateProfile({ avatar_url: url });
+  return { path, url };
 }
 
 async function signOut() {
-  await ensureClient();
-  if (!supabase) return true; // офлайн — noop
-  const { error } = await supabase.auth.signOut();
+  const sb = await ensureClient();
+  const { error } = await sb.auth.signOut();
   if (error) throw error;
   return true;
 }
 
-/* ========== FRIENDS / SEARCH / REQUESTS / COMMENTS ========== */
 async function searchUsersByNick(nick) {
-  await ensureClient();
-  if (!supabase) return []; // офлайн
-  const me = await getUser();
+  const sb = await ensureClient();
+  const me = await getSessionUser();
   if (!me) throw new Error('Требуется вход');
-  const q = String(nick || '').trim();
-  if (!q) return [];
-  const { data, error } = await supabase
+
+  const q = cleanSearch(nick);
+  if (q.length < 2) return [];
+
+  const { data, error } = await sb
     .from('profiles')
-    .select('id, display_name, avatar_url, email')
-    .or(`display_name.ilike.%${q}%,email.ilike.%${q}%`)
+    .select('id, username, display_name, avatar_url, last_seen')
+    .or(`username.ilike.%${q}%,display_name.ilike.%${q}%`)
     .limit(20);
+
   if (error) throw error;
-  return (data || []).filter(p => p.id !== me.id);
+  return (data || []).filter((p) => p.id !== me.id);
 }
 
-/** UPDATED: мягко обрабатывает 409/дубликаты */
 async function sendFriendRequest(toUserId) {
-  await ensureClient();
-  if (!supabase) return { ok:false, offline:true }; // офлайн
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) throw new Error('Требуется вход');
 
-  const target = String(toUserId || '').trim();
-  if (!target) throw new Error('Некорректный получатель');
+  const target = cleanUuid(toUserId, 'получатель');
   if (target === user.id) throw new Error('Нельзя отправить заявку самому себе');
 
-  const check = await supabase
-    .from('friend_requests')
-    .select('id,status,from_id,to_id')
-    .or(`and(from_id.eq.${user.id},to_id.eq.${target}),and(from_id.eq.${target},to_id.eq.${user.id})`)
-    .limit(1);
-  if (check.error) throw check.error;
-  if (check.data && check.data.length) {
-    return { ok: true, duplicate: true, status: check.data[0].status };
-  }
+  const existingFriend = await sb
+    .from('friends')
+    .select('friend_id')
+    .eq('user_id', user.id)
+    .eq('friend_id', target)
+    .maybeSingle();
+  if (existingFriend.error) throw existingFriend.error;
+  if (existingFriend.data) return { ok: true, alreadyFriends: true };
 
-  const { error } = await supabase
+  const pending = await sb
+    .from('friend_requests')
+    .select('id, status, from_id, to_id')
+    .or(`and(from_id.eq.${user.id},to_id.eq.${target},status.eq.pending),and(from_id.eq.${target},to_id.eq.${user.id},status.eq.pending)`)
+    .limit(1);
+  if (pending.error) throw pending.error;
+  if (pending.data?.length) return { ok: true, duplicate: true, status: pending.data[0].status };
+
+  const { error } = await sb
     .from('friend_requests')
     .insert({ from_id: user.id, to_id: target, status: 'pending' });
 
   if (error) {
-    if (String(error.code) === '23505' || String(error.status) === '409') {
-      return { ok: true, duplicate: true };
-    }
-    if (String(error.status) === '409') {
-      return { ok: false, reason: 'conflict', details: error.message || 'Conflict' };
-    }
+    if (String(error.code) === '23505' || String(error.status) === '409') return { ok: true, duplicate: true };
     throw error;
   }
+
   return { ok: true };
 }
 
 async function listIncomingRequests() {
-  await ensureClient();
-  if (!supabase) return []; // офлайн
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) throw new Error('Требуется вход');
-  const { data, error } = await supabase
+
+  const { data, error } = await sb
     .from('friend_requests')
-    .select('id, from_id, status, created_at, from:from_id (id, display_name, avatar_url)')
+    .select('id, from_id, status, created_at, from:from_id(id, username, display_name, avatar_url)')
     .eq('to_id', user.id)
-    .order('created_at', { ascending: false })
+    .eq('status', 'pending')
     .order('created_at', { ascending: false });
+
   if (error) throw error;
   return data || [];
 }
 
 async function listOutgoingRequests() {
-  await ensureClient();
-  if (!supabase) return []; // офлайн
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) throw new Error('Требуется вход');
-  const { data, error } = await supabase
+
+  const { data, error } = await sb
     .from('friend_requests')
-    .select('id, to_id, status, created_at, to:to_id (id, display_name, avatar_url)')
+    .select('id, to_id, status, created_at, to:to_id(id, username, display_name, avatar_url)')
     .eq('from_id', user.id)
     .eq('status', 'pending')
     .order('created_at', { ascending: false });
+
   if (error) throw error;
   return data || [];
 }
 
 async function respondFriendRequest(requestId, accept) {
-  await ensureClient();
-  if (!supabase) return { ok:false, offline:true }; // офлайн
-  const user = await getUser();
-  if (!user) throw new Error('Требуется вход');
-  if (!requestId) throw new Error('Нет id заявки');
+  const sb = await ensureClient();
+  const id = cleanUuid(requestId, 'заявка');
 
   if (accept) {
-    const { data, error } = await supabase
-      .from('friend_requests')
-      .update({ status: 'accepted' })
-      .eq('id', requestId)
-      .eq('to_id', user.id)
-      .select('from_id')
-      .limit(1);
-    if (error) throw error;
-    const row = Array.isArray(data) && data[0];
-    if (!row) return { ok: false };
+    const rpc = await sb.rpc('accept_friend_request', { request_id: id });
+    if (!rpc.error) return { ok: true, accepted: true };
 
-    const other = row.from_id;
-    const { error: e2 } = await supabase
-      .from('friends')
-      .upsert(
-        [
-          { user_id: user.id, friend_id: other },
-          { user_id: other,   friend_id: user.id },
-        ],
-        { onConflict: 'user_id,friend_id' }
-      );
+    // Fallback for old DB without RPC. Works only if RLS allows it.
+    const user = await getSessionUser();
+    if (!user) throw new Error('Требуется вход');
+    const { data, error } = await sb
+      .from('friend_requests')
+      .update({ status: 'accepted', responded_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('to_id', user.id)
+      .eq('status', 'pending')
+      .select('from_id')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return { ok: false };
+
+    const other = data.from_id;
+    const { error: e2 } = await sb.from('friends').upsert(
+      [
+        { user_id: user.id, friend_id: other },
+        { user_id: other, friend_id: user.id },
+      ],
+      { onConflict: 'user_id,friend_id' }
+    );
     if (e2) throw e2;
     return { ok: true, accepted: true };
-  } else {
-    const { error } = await supabase
-      .from('friend_requests')
-      .update({ status: 'rejected' })
-      .eq('id', requestId)
-      .eq('to_id', user.id);
-    if (error) throw error;
-    return { ok: true, accepted: false };
   }
+
+  const user = await getSessionUser();
+  if (!user) throw new Error('Требуется вход');
+  const { error } = await sb
+    .from('friend_requests')
+    .update({ status: 'rejected', responded_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('to_id', user.id)
+    .eq('status', 'pending');
+  if (error) throw error;
+  return { ok: true, accepted: false };
 }
 
 async function listFriends() {
-  await ensureClient();
-  if (!supabase) return []; // офлайн
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) throw new Error('Требуется вход');
-  const { data, error } = await supabase
+
+  const { data, error } = await sb
     .from('friends')
-    .select('friend_id, profiles:friend_id (id, display_name, avatar_url, last_seen)')
-    .eq('user_id', user.id);
+    .select('friend_id, profiles:friend_id(id, username, display_name, avatar_url, last_seen)')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false });
+
   if (error) throw error;
 
   const now = Date.now();
-  return (data || []).map(r => {
-    const p = r.profiles || {};
+  return (data || []).map((row) => {
+    const p = row.profiles || {};
     return {
-      id: p.id || r.friend_id,
+      id: p.id || row.friend_id,
+      username: p.username || null,
       display_name: p.display_name || 'Игрок',
       avatar_url: p.avatar_url || null,
-      online: !!(p.last_seen && (now - new Date(p.last_seen).getTime()) < 120000),
+      online: Boolean(p.last_seen && now - new Date(p.last_seen).getTime() < 120000),
     };
   });
 }
 
 async function removeFriend(friendId) {
-  await ensureClient();
-  if (!supabase) return true; // офлайн — считаем удалённым
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) throw new Error('Требуется вход');
-  const { error } = await supabase
+  const other = cleanUuid(friendId, 'друг');
+
+  const { error } = await sb
     .from('friends')
     .delete()
-    .or(`and(user_id.eq.${user.id},friend_id.eq.${friendId}),and(user_id.eq.${friendId},friend_id.eq.${user.id})`);
+    .or(`and(user_id.eq.${user.id},friend_id.eq.${other}),and(user_id.eq.${other},friend_id.eq.${user.id})`);
+
   if (error) throw error;
   return true;
 }
 
 async function getProfileById(id) {
-  await ensureClient();
-  if (!supabase) return null; // офлайн
-  const { data, error } = await supabase
+  const sb = await ensureClient();
+  const userId = cleanUuid(id, 'профиль');
+  const { data, error } = await sb
     .from('profiles')
-    .select('id, display_name, avatar_url, last_seen, email')
-    .eq('id', id)
-    .limit(1);
+    .select('id, username, display_name, avatar_url, last_seen, created_at')
+    .eq('id', userId)
+    .maybeSingle();
   if (error) throw error;
-  return (data && data[0]) || null;
+  return data || null;
+}
+
+async function fetchProfilesMap(ids) {
+  const sb = await ensureClient();
+  const uniq = Array.from(new Set((ids || []).filter(Boolean)));
+  if (!uniq.length) return new Map();
+
+  const { data, error } = await sb
+    .from('profiles')
+    .select('id, username, display_name, avatar_url')
+    .in('id', uniq);
+
+  if (error) return new Map();
+  return new Map((data || []).map((p) => [p.id, p]));
 }
 
 async function getComments(targetUserId) {
-  await ensureClient();
-  if (!supabase) return []; // офлайн
-  const { data, error } = await supabase
+  const sb = await ensureClient();
+  const target = cleanUuid(targetUserId, 'профиль');
+
+  const { data, error } = await sb
     .from('comments')
-    .select('author_id, text, created_at, author:author_id(display_name, avatar_url)')
-    .eq('target_id', targetUserId)
+    .select('id, author_id, text, created_at')
+    .eq('target_id', target)
     .order('created_at', { ascending: false })
     .limit(50);
+
   if (error) throw error;
-  return (data || []).map(c => ({
-    author_name: c.author?.display_name || 'Гость',
-    author_avatar: c.author?.avatar_url || null,
-    text: c.text,
-    ts: new Date(c.created_at).getTime(),
-  }));
-}
 
-/* ===== ДОБАВЛЕНО: безопасный фоллбэк для комментариев (убирает 400/406) ===== */
-async function __fetchProfilesMap(ids) {
-  await ensureClient();
-  if (!supabase || !ids?.length) return new Map();
-  const uniq = Array.from(new Set(ids));
-  const { data, error } = await supabase
-    .from('profiles')
-    .select('id, display_name, avatar_url')
-    .in('id', uniq);
-  if (error) return new Map();
-  const map = new Map();
-  (data || []).forEach(p => map.set(p.id, { display_name: p.display_name || 'Игрок', avatar_url: p.avatar_url || null }));
-  return map;
-}
-const __getComments_original = typeof getComments === 'function' ? getComments : null;
-
-async function getComments_safe(targetUserId) {
-  await ensureClient();
-  if (!supabase) return [];
-  if (__getComments_original) {
-    try { return await __getComments_original(targetUserId); }
-    catch (_) { /* фоллбэк ниже */ }
-  }
-  try {
-    const { data, error, status } = await supabase
-      .from('comments')
-      .select('author_id, text, created_at, target_id')
-      .eq('target_id', targetUserId)
-      .limit(50);
-    if (error && String(status) !== '406') throw error;
-    const rows = data || [];
-    const pmap = await __fetchProfilesMap(rows.map(r => r.author_id).filter(Boolean));
-    return rows.map(c => {
-      const p = pmap.get(c.author_id) || {};
-      return {
-        author_name: p.display_name || 'Гость',
-        author_avatar: p.avatar_url || null,
-        text: c.text,
-        ts: c.created_at ? new Date(c.created_at).getTime() : Date.now(),
-      };
-    });
-  } catch (_) {
-    return [];
-  }
+  const pmap = await fetchProfilesMap((data || []).map((c) => c.author_id));
+  return (data || []).map((c) => {
+    const p = pmap.get(c.author_id) || {};
+    return {
+      id: c.id,
+      author_id: c.author_id,
+      author_name: p.display_name || 'Игрок',
+      author_username: p.username || null,
+      author_avatar: p.avatar_url || null,
+      text: c.text,
+      ts: c.created_at ? new Date(c.created_at).getTime() : Date.now(),
+    };
+  });
 }
 
 async function addComment(targetUserId, text) {
-  await ensureClient();
-  if (!supabase) return false; // офлайн
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) throw new Error('Требуется вход');
-  const t = String(text || '').trim();
-  if (!t) throw new Error('Пустой комментарий');
-  const { error } = await supabase
-    .from('comments')
-    .insert({ author_id: user.id, target_id: targetUserId, text: t });
+
+  const target = cleanUuid(targetUserId, 'профиль');
+  const body = cleanText(text, 500);
+  if (!body) throw new Error('Пустой комментарий');
+
+  const { error } = await sb.from('comments').insert({ author_id: user.id, target_id: target, text: body });
   if (error) throw error;
   return true;
 }
 
-/* =============== ONLINE HEARTBEAT (last_seen) =============== */
-setInterval(async () => {
+async function heartbeat() {
   try {
-    await ensureClient();
-    if (!supabase) return;
-    const user = await getUser();
-    if (!user) return;
-    await supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', user.id);
-  } catch {}
-}, 30000);
+    const sb = await ensureClient();
+    const user = await getSessionUser();
+    if (!user) return false;
+    await sb.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', user.id);
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
 
-/* ======================= PLAYTIME ======================== */
+setInterval(heartbeat, 30000);
+
 async function startPlaySession(gameId) {
-  await ensureClient();
-  if (!supabase) return true; // офлайн — no-op
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) throw new Error('Требуется вход');
-  const gid = String(gameId || '').trim();
+  const gid = cleanText(gameId, 64);
   if (!gid) throw new Error('Нет gameId');
 
-  await supabase
+  await sb
     .from('playtime_sessions')
     .update({ stopped_at: new Date().toISOString() })
     .is('stopped_at', null)
     .eq('user_id', user.id)
-    .eq('game_id', gid)
-    .catch(() => {});
+    .eq('game_id', gid);
 
-  const { error } = await supabase.from('playtime_sessions').insert({ user_id: user.id, game_id: gid });
+  const { data, error } = await sb
+    .from('playtime_sessions')
+    .insert({ user_id: user.id, game_id: gid })
+    .select('id')
+    .maybeSingle();
+
   if (error) throw error;
-  return true;
+  return { ok: true, id: data?.id || null };
 }
+
 async function stopPlaySession(gameId) {
-  await ensureClient();
-  if (!supabase) return true; // офлайн
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) throw new Error('Требуется вход');
-  const gid = String(gameId || '').trim();
+  const gid = cleanText(gameId, 64);
   if (!gid) throw new Error('Нет gameId');
-  const { error } = await supabase
+
+  const { error } = await sb
     .from('playtime_sessions')
     .update({ stopped_at: new Date().toISOString() })
     .is('stopped_at', null)
@@ -516,89 +688,126 @@ async function stopPlaySession(gameId) {
   if (error) throw error;
   return true;
 }
+
 async function getPlaytime(gameId) {
-  await ensureClient();
-  if (!supabase) return 0; // офлайн
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) throw new Error('Требуется вход');
-  const gid = String(gameId || '').trim();
+  const gid = cleanText(gameId, 64);
   if (!gid) throw new Error('Нет gameId');
-  const { data, error } = await supabase
+
+  const { data, error } = await sb
     .from('playtime_sessions')
     .select('started_at, stopped_at')
     .eq('user_id', user.id)
     .eq('game_id', gid);
   if (error) throw error;
-  let seconds = 0;
-  (data || []).forEach(s => {
+
+  return (data || []).reduce((seconds, s) => {
     const a = new Date(s.started_at).getTime();
     const b = s.stopped_at ? new Date(s.stopped_at).getTime() : Date.now();
-    if (!isNaN(a) && !isNaN(b) && b > a) seconds += Math.floor((b - a) / 1000);
-  });
-  return seconds;
+    return seconds + (!Number.isNaN(a) && !Number.isNaN(b) && b > a ? Math.floor((b - a) / 1000) : 0);
+  }, 0);
 }
+
 async function getRecentPlaytimes(limit = 10) {
-  await ensureClient();
-  if (!supabase) return []; // офлайн
-  const user = await getUser();
+  const sb = await ensureClient();
+  const user = await getSessionUser();
   if (!user) throw new Error('Требуется вход');
-  const { data, error } = await supabase
+
+  const { data, error } = await sb
     .from('playtime_sessions')
     .select('game_id, started_at, stopped_at')
-    .eq('user_id', user.id);
+    .eq('user_id', user.id)
+    .limit(1000);
   if (error) throw error;
+
   const map = new Map();
-  (data || []).forEach(s => {
+  (data || []).forEach((s) => {
     const a = new Date(s.started_at).getTime();
     const b = s.stopped_at ? new Date(s.stopped_at).getTime() : Date.now();
-    const d = (!isNaN(a) && !isNaN(b) && b > a) ? Math.floor((b - a) / 1000) : 0;
+    const d = !Number.isNaN(a) && !Number.isNaN(b) && b > a ? Math.floor((b - a) / 1000) : 0;
     map.set(s.game_id, (map.get(s.game_id) || 0) + d);
   });
+
   return Array.from(map.entries())
     .map(([game_id, seconds]) => ({ game_id, seconds }))
-    .sort((x, y) => y.seconds - x.seconds)
-    .slice(0, limit);
+    .sort((a, b) => b.seconds - a.seconds)
+    .slice(0, Number(limit) || 10);
 }
 
-const { contextBridge } = require('electron');
-const { createClient } = require('@supabase/supabase-js');
+async function health() {
+  try {
+    await timeoutFetch(`${SUPABASE_URL}/auth/v1/health`, {
+      method: 'GET',
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+      },
+    });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: normalizeSupabaseError(error).message };
+  }
+}
 
-const supabaseUrl = 'https://<YOUR-REF>.supabase.co';
-const supabaseKey = '<YOUR-ANON-KEY>';
-const sb = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: true } });
+async function getNovelSignedUrl(path) {
+  const sb = await ensureClient();
+  const filePath = String(path || '').trim();
+  if (!filePath || filePath.includes('..')) throw new Error('Некорректный путь файла');
 
-contextBridge.exposeInMainWorld('sb', {
-  // кто залогинен
-  getUserId: async () => (await sb.auth.getUser()).data.user?.id || null,
+  const { data, error } = await sb.storage.from('builds').createSignedUrl(filePath, 60);
+  if (error) throw error;
+  return data.signedUrl;
+}
 
-  // получить подписанную ссылку на файл новеллы (живет 60 сек)
-  getNovelSignedUrl: async (path) => {
-    const { data, error } = await sb
-      .storage.from('builds')
-      .createSignedUrl(path, 60); // 60 секунд
-    if (error) throw error;
-    return data.signedUrl;
+const launcherApi = Object.freeze({
+  selectExe: () => ipcRenderer.invoke('select-exe'),
+  getExe: () => ipcRenderer.invoke('get-exe'),
+  runGame: (payload) => ipcRenderer.invoke('run-game', payload),
+  getAuthSession: getSession,
+  getCardGameStatus: (payload) => ipcRenderer.invoke('card-game:status', payload),
+  installCardGame: (payload) => ipcRenderer.invoke('card-game:install', payload),
+  openCardGame: (payload) => ipcRenderer.invoke('card-game:open', payload),
+  saveUpload: (payload) => ipcRenderer.invoke('save-upload', payload),
+  saveDownload: (payload) => ipcRenderer.invoke('save-download', payload),
+  downloadNovel: (payload) => ipcRenderer.invoke('download-novel', payload),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  getPlatform: () => ipcRenderer.invoke('get-platform'),
+  getAppVersion: () => ipcRenderer.invoke('app-version'),
+  getLauncherConfig: () => ipcRenderer.invoke('launcher-config'),
+  getLauncherConfigPath: () => ipcRenderer.invoke('launcher-config-path'),
+  getUserDataPath: () => ipcRenderer.invoke('user-data-path'),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  quitAndInstallUpdate: () => ipcRenderer.invoke('update:quitAndInstall'),
+  onUpdateStatus: (cb) => {
+    const listener = (_event, payload) => typeof cb === 'function' && cb(payload);
+    ipcRenderer.on('update:status', listener);
+    return () => ipcRenderer.removeListener('update:status', listener);
   },
-
-  // логин по маг. ссылке/коду — как у тебя уже сделано
-  sendMagicLink: async (email) => sb.auth.signInWithOtp({ email }),
-  verifyOtp: async (email, token) => sb.auth.verifyOtp({ email, token, type: 'email' }),
-  signOut: async () => sb.auth.signOut(),
+  onUpdateProgress: (cb) => {
+    const listener = (_event, payload) => typeof cb === 'function' && cb(payload);
+    ipcRenderer.on('update:progress', listener);
+    return () => ipcRenderer.removeListener('update:progress', listener);
+  },
+  onGameStatus: (cb) => {
+    const listener = (_event, payload) => typeof cb === 'function' && cb(payload);
+    ipcRenderer.on('game:status', listener);
+    return () => ipcRenderer.removeListener('game:status', listener);
+  },
+  onGameProgress: (cb) => {
+    const listener = (_event, payload) => typeof cb === 'function' && cb(payload);
+    ipcRenderer.on('game:progress', listener);
+    return () => ipcRenderer.removeListener('game:progress', listener);
+  },
 });
 
+const sbApiRaw = {
+  __version: 'preload-2026-07-08-game-auth-handoff',
+  __list: () => Object.keys(sbApi).sort(),
 
-/* ===================== DEBUG HELPERS ===================== */
-function __list() { try { return Object.keys(window.sb || {}).sort(); } catch { return []; } }
-
-/* ======================== EXPOSE ========================= */
-contextBridge.exposeInMainWorld('sb', Object.freeze({
-  __version: 'preload-2025-10-17+silent-offline',
-  __list,
-
-  // auth / profile
   getSession,
-  getUserId,              // ADD
-  onAuthStateChange,      // ADD
+  getUserId,
+  onAuthStateChange,
   sendMagicLink,
   verifyOtp,
   getProfile,
@@ -606,21 +815,34 @@ contextBridge.exposeInMainWorld('sb', Object.freeze({
   uploadAvatar,
   signOut,
 
-  // friends / search / comments
   searchUsersByNick,
-  sendFriendRequest,        // ← обновлено
+  sendFriendRequest,
   listIncomingRequests,
   listOutgoingRequests,
   respondFriendRequest,
   listFriends,
   removeFriend,
   getProfileById,
-  getComments: getComments_safe, // ← экспортим безопасную версию
+  getComments,
   addComment,
 
-  // playtime
+  heartbeat,
+  health,
   startPlaySession,
   stopPlaySession,
   getPlaytime,
   getRecentPlaytimes,
-}));
+
+  getNovelSignedUrl,
+};
+
+const sbApi = Object.freeze(Object.fromEntries(
+  Object.entries(sbApiRaw).map(([key, value]) => [
+    key,
+    typeof value === 'function' && !key.startsWith('__') && key !== 'onAuthStateChange' ? safeApi(value) : value,
+  ])
+));
+
+contextBridge.exposeInMainWorld('launcher', launcherApi);
+contextBridge.exposeInMainWorld('api', launcherApi);
+contextBridge.exposeInMainWorld('sb', sbApi);
