@@ -1,6 +1,6 @@
 {
   "name": "fraktum-launcher",
-  "version": "1.1.10",
+  "version": "1.1.11",
   "description": "Fraktum Game Launcher",
   "main": "main.js",
   "author": "Fraktum Studio",
@@ -48,7 +48,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "Fraktum Launcher"
+      "shortcutName": "Fraktum Launcher",
+      "artifactName": "Fraktum-Launcher-Setup-${version}.${ext}"
     },
     "publish": [
       {
@@ -57,6 +58,7 @@
         "repo": "fraktum-launcher",
         "releaseType": "release"
       }
-    ]
+    ],
+    "artifactName": "Fraktum-Launcher-Setup-${version}.${ext}"
   }
 }
