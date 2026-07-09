@@ -11,6 +11,75 @@ let supabase = null;
 const SUPABASE_URL = 'https://bvnbqjhgnlvthkluddfj.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ2bmJxamhnbmx2dGhrbHVkZGZqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgxMjcwNjYsImV4cCI6MjA3MzcwMzA2Nn0.TB-qIFbtL_d5Gno99JdttsS2LdyC6z_9n0WN_Uj9QLY';
 
+function getSupabaseProjectRef() {
+  try {
+    return new URL(SUPABASE_URL).hostname.split('.')[0] || '';
+  } catch (_e) {
+    return '';
+  }
+}
+
+function normalizeHandoffSession(value) {
+  if (!value || typeof value !== 'object') return null;
+  const source = value.session && typeof value.session === 'object' ? value.session : value;
+  if (!source.access_token || !source.refresh_token) return null;
+
+  const expiresAt = Number(source.expires_at || 0) || Math.floor(Date.now() / 1000) + 3600;
+  return {
+    access_token: String(source.access_token),
+    refresh_token: String(source.refresh_token),
+    expires_at: expiresAt,
+    expires_in: Math.max(0, expiresAt - Math.floor(Date.now() / 1000)),
+    token_type: source.token_type || 'bearer',
+    user: source.user || null,
+  };
+}
+
+function readLauncherSessionFromLocation() {
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    const encoded = params.get('fraktumSession');
+    if (!encoded) return null;
+
+    const json = Buffer.from(String(encoded), 'base64url').toString('utf8');
+    return normalizeHandoffSession(JSON.parse(json));
+  } catch (error) {
+    console.warn('[FRAKTUM] Failed to read launcher auth handoff:', String(error?.message || error));
+    return null;
+  }
+}
+
+function persistLauncherSessionForGame(session) {
+  const normalized = normalizeHandoffSession(session);
+  if (!normalized) return false;
+
+  try {
+    const projectRef = getSupabaseProjectRef();
+    const keys = [
+      projectRef ? `sb-${projectRef}-auth-token` : '',
+      'fraktum.launcher.auth-session',
+    ].filter(Boolean);
+
+    const payload = JSON.stringify(normalized);
+    for (const key of keys) {
+      window.localStorage?.setItem(key, payload);
+    }
+
+    window.sessionStorage?.setItem('fraktum.launcher.auth-session', payload);
+    window.__FRAKTUM_LAUNCHER_AUTH__ = normalized;
+
+    console.info('[FRAKTUM] Launcher auth handoff persisted for game');
+    return true;
+  } catch (error) {
+    console.warn('[FRAKTUM] Failed to persist launcher auth handoff:', String(error?.message || error));
+    return false;
+  }
+}
+
+// This preload is also used for the downloaded card game window.
+// Persist the launcher Supabase session before the game bundle starts.
+persistLauncherSessionForGame(readLauncherSessionFromLocation());
+
 try {
   ({ createClient: createClientMaybe } = require('@supabase/supabase-js'));
 } catch (_e) {
@@ -765,6 +834,7 @@ const launcherApi = Object.freeze({
   getExe: () => ipcRenderer.invoke('get-exe'),
   runGame: (payload) => ipcRenderer.invoke('run-game', payload),
   getAuthSession: getSession,
+  getLauncherHandoffSession: () => Promise.resolve(normalizeHandoffSession(window.__FRAKTUM_LAUNCHER_AUTH__ || null)),
   getCardGameStatus: (payload) => ipcRenderer.invoke('card-game:status', payload),
   installCardGame: (payload) => ipcRenderer.invoke('card-game:install', payload),
   openCardGame: (payload) => ipcRenderer.invoke('card-game:open', payload),

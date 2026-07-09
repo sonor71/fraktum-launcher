@@ -355,11 +355,6 @@ function setupAutoUpdate() {
     });
   });
 
-  autoUpdater.on('update-downloaded', (info) => {
-    log.info('[Updater] downloaded', info);
-    sendToRenderer('update:status', { state: 'downloaded', version: info?.version || null });
-  });
-
   autoUpdater.on('error', (err) => {
     log.error('[Updater] error', err);
     sendToRenderer('update:status', { state: 'error', error: String(err?.message || err) });
@@ -840,24 +835,48 @@ async function getLauncherSupabaseSessionForGame() {
   if (!mainWin || mainWin.isDestroyed()) return null;
 
   try {
-    // Executed while the launcher page is still loaded. It can read the
-    // launcher Supabase session before we navigate the same BrowserWindow to
-    // the downloaded game URL.
+    // Executed while the launcher page is still loaded. It tries the public
+    // launcher Supabase bridge first, then falls back to the renderer localStorage.
+    // This keeps the user's custom launcher UI intact and avoids relying on a
+    // single API method name.
     const session = await mainWin.webContents.executeJavaScript(`
       (async () => {
-        try {
-          const raw = await window.sb?.getSession?.();
-          if (!raw || !raw.access_token || !raw.refresh_token) return null;
+        const normalize = (value) => {
+          if (!value || typeof value !== 'object') return null;
+          const source = value.session && typeof value.session === 'object' ? value.session : value;
+          if (!source.access_token || !source.refresh_token) return null;
           return {
-            access_token: raw.access_token,
-            refresh_token: raw.refresh_token,
-            expires_at: raw.expires_at || null,
-            token_type: raw.token_type || 'bearer',
-            user: raw.user || null
+            access_token: source.access_token,
+            refresh_token: source.refresh_token,
+            expires_at: source.expires_at || null,
+            expires_in: source.expires_in || null,
+            token_type: source.token_type || 'bearer',
+            user: source.user || null
           };
-        } catch (_e) {
-          return null;
-        }
+        };
+
+        try {
+          const fromLauncher = await window.launcher?.getAuthSession?.();
+          const normalizedLauncher = normalize(fromLauncher);
+          if (normalizedLauncher) return normalizedLauncher;
+        } catch (_e) {}
+
+        try {
+          const fromSb = await window.sb?.getSession?.();
+          const normalizedSb = normalize(fromSb);
+          if (normalizedSb) return normalizedSb;
+        } catch (_e) {}
+
+        try {
+          for (const key of Object.keys(window.localStorage || {})) {
+            if (!/^sb-.+-auth-token$/.test(key)) continue;
+            const parsed = JSON.parse(localStorage.getItem(key) || 'null');
+            const normalized = normalize(parsed);
+            if (normalized) return normalized;
+          }
+        } catch (_e) {}
+
+        return null;
       })()
     `, true);
 
@@ -888,7 +907,10 @@ function appendGameLaunchParams(baseUrl, { session, source = 'launcher' } = {}) 
   url.searchParams.set('fraktumSource', source);
 
   const encodedSession = encodeSessionForGame(session);
-  if (encodedSession) url.searchParams.set('fraktumSession', encodedSession);
+  if (encodedSession) {
+    url.searchParams.set('fraktumSession', encodedSession);
+    url.searchParams.set('fraktumAuth', 'launcher');
+  }
 
   // HashRouter still starts at /, but query params remain readable by the game.
   if (!url.hash) url.hash = '#/';
@@ -920,7 +942,7 @@ async function openCardGame({ forceUpdate = false } = {}) {
   const launcherSession = await getLauncherSupabaseSessionForGame();
   const launchUrl = appendGameLaunchParams(url, { session: launcherSession, source: 'launcher' });
 
-  sendToRenderer('game:status', { state: 'launching', gameId: 'cards', version: install.version, url });
+  sendToRenderer('game:status', { state: 'launching', gameId: 'cards', version: install.version, url, authHandoff: Boolean(launcherSession) });
   try { mainWin.webContents.closeDevTools(); } catch (_e) {}
   await mainWin.loadURL(launchUrl);
   await waitForGameDomReady();

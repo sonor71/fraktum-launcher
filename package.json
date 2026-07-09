@@ -1,6 +1,6 @@
 {
   "name": "fraktum-launcher",
-  "version": "1.1.9",
+  "version": "1.1.10",
   "description": "Fraktum Game Launcher",
   "main": "main.js",
   "author": "Fraktum Studio",
@@ -57,7 +57,6 @@
         "repo": "fraktum-launcher",
         "releaseType": "release"
       }
-    ],
-    "artifactName": "Fraktum-Launcher-Setup-${version}.${ext}"
+    ]
   }
 }
