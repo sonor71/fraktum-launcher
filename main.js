@@ -104,11 +104,20 @@ function setCfg(patch) {
   writeJSON(cfgFile, { ...getCfg(), ...patch });
 }
 
-const launcherCfgFile = path.join(__dirname, 'launcher.config.json');
+const launcherCfgCandidates = [
+  path.join(app.getPath('userData'), 'launcher.config.json'),
+  path.join(path.dirname(process.execPath), 'launcher.config.json'),
+  path.join(__dirname, 'launcher.config.json'),
+];
+
+const launcherCfgFile = launcherCfgCandidates[0];
 
 function getLauncherConfig() {
-  const fileCfg = readJSON(launcherCfgFile, {});
-  return fileCfg && typeof fileCfg === 'object' ? fileCfg : {};
+  for (const file of launcherCfgCandidates) {
+    const fileCfg = readJSON(file, null);
+    if (fileCfg && typeof fileCfg === 'object') return fileCfg;
+  }
+  return {};
 }
 
 function getCardGameConfig() {
